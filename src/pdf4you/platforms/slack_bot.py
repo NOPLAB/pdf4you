@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 import aiohttp
@@ -18,6 +19,20 @@ from ..config import Settings
 from .base import JobCallback, JobRequest, PlatformAdapter
 
 logger = logging.getLogger(__name__)
+
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*$", re.MULTILINE)
+
+
+def _to_mrkdwn(text: str) -> str:
+    """GitHub風Markdown を Slack の mrkdwn に変換する。
+
+    Slack は `##` 見出しや `**bold**` を解釈しないため、
+    見出し行は太字に、`**bold**` は `*bold*` に変換する。
+    """
+    text = _HEADING_RE.sub(r"*\1*", text)
+    text = _BOLD_RE.sub(r"*\1*", text)
+    return text
 
 
 class SlackAdapter(PlatformAdapter):
@@ -97,8 +112,9 @@ class SlackAdapter(PlatformAdapter):
 
     async def post_text(self, req, text):
         # Slack の text は長文可（~40000字）。ここでは分割しない。
+        # 要約は GitHub風Markdown なので Slack mrkdwn に変換して投稿する。
         await self._app.client.chat_postMessage(
-            channel=req.channel_id, thread_ts=req.thread_ref, text=text
+            channel=req.channel_id, thread_ts=req.thread_ref, text=_to_mrkdwn(text)
         )
 
     async def upload_file(self, req, path, *, title, comment=""):
