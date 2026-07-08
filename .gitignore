@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+# （uv.lock はコミット対象。除外しない）
+
+# 環境変数・秘匿情報
+.env
+
+# 作業ディレクトリ・生成物
+work/
+*.pdf
+!docs/**/*.pdf
+
+# ログ
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
