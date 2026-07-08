@@ -1,0 +1,21 @@
+# ホストの仮想環境はイメージに含めない（壊れたsymlinkで uv run が失敗するため）
+.venv/
+
+# git 履歴・作業ファイル・秘匿情報
+.git/
+.gitignore
+work/
+.env
+
+# キャッシュ類
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 注意: README.md は pyproject.toml の readme= で参照されるため除外しない

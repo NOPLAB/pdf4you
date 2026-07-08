@@ -2,10 +2,19 @@ services:
   pdf4you:
     build: .
     env_file: .env
+    # ホスト上の vLLM/Ollama(localhost:8000 / 11434) へ到達するためホストネットワークを共有。
+    # これによりネイティブ実行と同じく localhost 指定がそのまま使える（Linux限定）。
+    network_mode: host
     volumes:
       - ./work:/app/work          # 生成物・作業ファイルを永続化
       - babeldoc-cache:/root/.cache  # BabelDOCモデル/翻訳キャッシュを保持
     restart: unless-stopped
 
+    # --- 代替案（ネットワーク分離を保ちたい場合）: network_mode: host を消し、以下を有効化 ---
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    # その上で .env の base_url を http://host.docker.internal:8000/v1 等に変更する。
+
+# network_mode: host 使用時は named volume 定義のみ残す（ポート公開は無効になる）
 volumes:
   babeldoc-cache:
