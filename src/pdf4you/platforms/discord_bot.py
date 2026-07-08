@@ -13,7 +13,7 @@ import uuid
 import discord
 
 from ..config import Settings
-from .base import JobCallback, JobRequest, PlatformAdapter
+from .base import JobCallback, JobRequest, PlatformAdapter, ProgressHandle
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,19 @@ _DISCORD_LIMIT = 1900  # メッセージ2000字制限に対する安全マージ
 
 def _split(text: str, limit: int = _DISCORD_LIMIT) -> list[str]:
     return [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
+
+
+class _DiscordProgress(ProgressHandle):
+    """`Message.edit` で同一メッセージを上書きする進捗ハンドル。"""
+
+    def __init__(self, message: discord.Message):
+        self._message = message
+
+    async def update(self, text: str) -> None:
+        try:
+            await self._message.edit(content=text[:_DISCORD_LIMIT])
+        except Exception:
+            logger.warning("進捗メッセージの更新に失敗しました", exc_info=True)
 
 
 class DiscordAdapter(PlatformAdapter):
@@ -119,6 +132,11 @@ class DiscordAdapter(PlatformAdapter):
         thread = self._dest(req)
         for chunk in _split(text):
             await thread.send(chunk)
+
+    async def start_progress(self, req, text):
+        thread = self._dest(req)
+        message = await thread.send(text[:_DISCORD_LIMIT])
+        return _DiscordProgress(message)
 
     async def upload_file(self, req, path, *, title, comment=""):
         thread = self._dest(req)

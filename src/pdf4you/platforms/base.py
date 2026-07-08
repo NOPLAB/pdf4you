@@ -33,6 +33,25 @@ class JobRequest:
 JobCallback = Callable[[JobRequest], Awaitable[None]]
 
 
+class ProgressHandle(abc.ABC):
+    """1件の進捗メッセージを指すハンドル。`update()` で同じメッセージを上書きする。
+
+    翻訳の進捗バーのように「1つのメッセージを編集し続ける」用途に使う。更新は
+    ベストエフォート（失敗してもジョブ本体を止めない）。
+    """
+
+    @abc.abstractmethod
+    async def update(self, text: str) -> None:
+        """既存の進捗メッセージを `text` で上書き（編集）する。"""
+
+
+class _NoUpdateProgress(ProgressHandle):
+    """編集に非対応なアダプタ向けのフォールバック（更新は無視する）。"""
+
+    async def update(self, text: str) -> None:
+        return
+
+
 class PlatformAdapter(abc.ABC):
     """Slack / Discord など各プラットフォームの実装が満たすインターフェース。"""
 
@@ -55,6 +74,15 @@ class PlatformAdapter(abc.ABC):
         self, req: JobRequest, path: Path, *, title: str, comment: str = ""
     ) -> None:
         """スレッドにファイルを添付する。"""
+
+    async def start_progress(self, req: JobRequest, text: str) -> ProgressHandle:
+        """進捗表示用のメッセージを1件投稿し、上書き可能なハンドルを返す。
+
+        既定は「投稿はするが更新はできない」フォールバック。編集に対応する
+        アダプタ（Slack / Discord）はこれを上書きして実メッセージのハンドルを返す。
+        """
+        await self.post_text(req, text)
+        return _NoUpdateProgress()
 
     def is_allowed(self, user_id: str) -> bool:
         """アクセス制御。許可ユーザー未設定なら誰でも可（サブクラスで上書き）。"""

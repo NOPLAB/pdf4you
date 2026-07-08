@@ -14,6 +14,7 @@ from ..config import Settings
 from ..platforms.base import JobRequest, PlatformAdapter
 from . import extractor, summarizer, translator
 from .llm_client import make_client
+from .progress import ProgressThrottle, render_bar
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ async def process_job(
     settings: Settings,
     job_dir: Path,
 ) -> None:
-    await adapter.post_text(
+    # 受付〜完了までを1つのメッセージで表現する（翻訳中はバーで上書きする）。
+    progress = await adapter.start_progress(
         req, f"📥 受け付けました。翻訳・要約を開始します（`{req.filename}`）。"
     )
 
@@ -34,7 +36,7 @@ async def process_job(
         await adapter.download(req, src)
     except Exception:
         logger.exception("ダウンロード失敗: %s", req.id)
-        await adapter.post_text(req, "⚠️ ファイルの取得に失敗しました。")
+        await progress.update("⚠️ ファイルの取得に失敗しました。")
         return
 
     # 2. テキスト抽出（同期処理なのでスレッドに逃がす）＆ 入力言語の解決
@@ -46,6 +48,17 @@ async def process_job(
     summary_task = asyncio.create_task(
         summarizer.summarize(summary_client, settings.summary_model, text)
     )
+
+    # 翻訳の進捗で進捗メッセージを上書きする（レート制限/スパム回避のため間引く）。
+    throttle = ProgressThrottle()
+
+    async def on_progress(overall, stage, part_index, total_parts):
+        if not throttle.should_emit(overall):
+            return
+        await progress.update(
+            render_bar(overall, stage=stage, part_index=part_index, total_parts=total_parts)
+        )
+
     translate_task = asyncio.create_task(
         translator.translate_pdf(
             src,
@@ -55,6 +68,7 @@ async def process_job(
             base_url=settings.translate_base_url,
             api_key=settings.translate_api_key,
             model=settings.translate_model,
+            on_progress=on_progress,
         )
     )
 
@@ -71,7 +85,7 @@ async def process_job(
         result = await translate_task
     except Exception:
         logger.exception("翻訳失敗: %s", req.id)
-        await adapter.post_text(req, "⚠️ 翻訳に失敗しました。")
+        await progress.update("⚠️ 翻訳に失敗しました。")
         return
 
     stem = Path(req.filename).stem
@@ -87,6 +101,6 @@ async def process_job(
         )
         posted = True
 
-    await adapter.post_text(
-        req, "✅ 完了しました。" if posted else "⚠️ 翻訳PDFを生成できませんでした。"
+    await progress.update(
+        "✅ 完了しました。" if posted else "⚠️ 翻訳PDFを生成できませんでした。"
     )

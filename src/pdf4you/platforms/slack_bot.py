@@ -16,7 +16,7 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.app.async_app import AsyncApp
 
 from ..config import Settings
-from .base import JobCallback, JobRequest, PlatformAdapter
+from .base import JobCallback, JobRequest, PlatformAdapter, ProgressHandle
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,23 @@ def _to_mrkdwn(text: str) -> str:
     text = _HEADING_RE.sub(r"*\1*", text)
     text = _BOLD_RE.sub(r"*\1*", text)
     return text
+
+
+class _SlackProgress(ProgressHandle):
+    """`chat.update` で同一メッセージ（channel + ts）を上書きする進捗ハンドル。"""
+
+    def __init__(self, client, channel: str, ts: str):
+        self._client = client
+        self._channel = channel
+        self._ts = ts
+
+    async def update(self, text: str) -> None:
+        try:
+            await self._client.chat_update(
+                channel=self._channel, ts=self._ts, text=_to_mrkdwn(text)
+            )
+        except Exception:
+            logger.warning("進捗メッセージの更新に失敗しました", exc_info=True)
 
 
 class SlackAdapter(PlatformAdapter):
@@ -116,6 +133,12 @@ class SlackAdapter(PlatformAdapter):
         await self._app.client.chat_postMessage(
             channel=req.channel_id, thread_ts=req.thread_ref, text=_to_mrkdwn(text)
         )
+
+    async def start_progress(self, req, text):
+        resp = await self._app.client.chat_postMessage(
+            channel=req.channel_id, thread_ts=req.thread_ref, text=_to_mrkdwn(text)
+        )
+        return _SlackProgress(self._app.client, req.channel_id, resp["ts"])
 
     async def upload_file(self, req, path, *, title, comment=""):
         await self._app.client.files_upload_v2(

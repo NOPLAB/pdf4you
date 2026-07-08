@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,10 @@ logger = logging.getLogger(__name__)
 class TranslateResult:
     mono_path: Path | None
     dual_path: Path | None
+
+
+# 進捗コールバック: (overall_progress[0..100], stage, part_index, total_parts)
+OnProgress = Callable[[float, str, int, int], Awaitable[None]]
 
 
 def _to_path(value: object) -> Path | None:
@@ -35,6 +40,7 @@ async def translate_pdf(
     model: str,
     make_mono: bool = True,
     make_dual: bool = True,
+    on_progress: OnProgress | None = None,
 ) -> TranslateResult:
     """`src` を翻訳し、`out_dir` に mono/dual PDF を生成してパスを返す。
 
@@ -76,5 +82,16 @@ async def translate_pdf(
             logger.info("翻訳完了: mono=%s dual=%s", mono_path, dual_path)
         elif etype == "error":
             raise RuntimeError(f"pdf2zh-next 翻訳エラー: {event.get('error')}")
+        elif etype == "progress_update" and on_progress is not None:
+            # 進捗通知はベストエフォート。コールバックの失敗で翻訳を止めない。
+            try:
+                await on_progress(
+                    float(event.get("overall_progress", 0.0)),
+                    str(event.get("stage", "")),
+                    int(event.get("part_index", 0)),
+                    int(event.get("total_parts", 0)),
+                )
+            except Exception:
+                logger.warning("進捗コールバックでエラーが発生しました", exc_info=True)
 
     return TranslateResult(mono_path, dual_path)
