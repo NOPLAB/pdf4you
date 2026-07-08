@@ -1,0 +1,70 @@
+"""エントリポイント。Slack / Discord アダプタとジョブワーカーを単一プロセスで並行起動する。"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from .config import get_settings
+from .core.pipeline import process_job
+from .jobs.queue import JobQueue
+from .jobs.store import FileStore
+from .platforms.base import JobRequest, PlatformAdapter
+
+
+def _setup_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+async def run() -> None:
+    settings = get_settings()
+    _setup_logging(settings.log_level)
+    log = logging.getLogger("pdf4you")
+
+    store = FileStore(settings.work_dir, settings.file_retention_days)
+    store.cleanup_old()
+
+    adapters: dict[str, PlatformAdapter] = {}
+
+    async def worker(req: JobRequest) -> None:
+        adapter = adapters.get(req.platform)
+        if adapter is None:
+            log.error("未知のプラットフォーム: %s", req.platform)
+            return
+        job_dir = store.job_dir(req.id)
+        await process_job(req, adapter, settings, job_dir)
+
+    queue = JobQueue(worker, settings.max_concurrency)
+
+    # トークンが設定されている方だけ起動（重いSDKは遅延import）
+    if settings.slack_enabled:
+        from .platforms.slack_bot import SlackAdapter
+
+        adapters["slack"] = SlackAdapter(settings, queue.enqueue)
+    if settings.discord_enabled:
+        from .platforms.discord_bot import DiscordAdapter
+
+        adapters["discord"] = DiscordAdapter(settings, queue.enqueue)
+
+    if not adapters:
+        raise SystemExit(
+            "Slack / Discord いずれのトークンも設定されていません。.env を確認してください。"
+        )
+
+    queue.start()
+    log.info("pdf4you 起動: %s", ", ".join(adapters))
+    await asyncio.gather(*(a.start() for a in adapters.values()))
+
+
+def main() -> None:
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
