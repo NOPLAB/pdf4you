@@ -1,0 +1,11 @@
+services:
+  pdf4you:
+    build: .
+    env_file: .env
+    volumes:
+      - ./work:/app/work          # 生成物・作業ファイルを永続化
+      - babeldoc-cache:/root/.cache  # BabelDOCモデル/翻訳キャッシュを保持
+    restart: unless-stopped
+
+volumes:
+  babeldoc-cache:
