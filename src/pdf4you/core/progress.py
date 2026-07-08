@@ -53,6 +53,18 @@ def _bar(pct: float, width: int = 10) -> str:
     return _BAR_FILLED * filled + _BAR_EMPTY * (width - filled)
 
 
+def render_phase(emoji: str, label: str, pct: float, detail: str = "") -> str:
+    """翻訳以外の単一工程（ダウンロード・抽出など）向けの1行バー。
+
+    例:: ``⬇️ ダウンロード中  ▓▓▓▓▓▓░░░░   63%  (12.5/20.0 MB)``
+    """
+    pct = max(0.0, min(100.0, float(pct)))
+    line = f"{emoji} {label}  {_bar(pct)}  {pct:3.0f}%"
+    if detail:
+        line += f"  {detail}"
+    return line
+
+
 def render_progress(ev: ProgressEvent) -> str:
     """全体バー（メイン）＋工程内バー（サブ）の複数行テキストを組み立てる。
 

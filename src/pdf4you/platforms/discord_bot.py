@@ -113,19 +113,32 @@ class DiscordAdapter(PlatformAdapter):
     def _dest(self, req):
         return req.meta.get("thread") or self._threads.get(req.thread_ref)
 
-    async def download(self, req, dest):
+    async def download(self, req, dest, *, on_progress=None):
         dest.parent.mkdir(parents=True, exist_ok=True)
         att = req.meta.get("attachment")
-        if att is not None:
+        # 進捗不要なら discord.py の save() が最速。進捗が要るときはチャンク受信する。
+        if att is not None and on_progress is None:
             await att.save(dest)
             return dest
-        # フォールバック: 添付URLから取得（attachment url は認証不要）
+        # attachment url は認証不要。チャンク受信しながら進捗を通知する。
         import aiohttp
 
         async with aiohttp.ClientSession() as session:
             async with session.get(req.file_url) as resp:
                 resp.raise_for_status()
-                dest.write_bytes(await resp.read())
+                total = int(
+                    resp.headers.get("Content-Length")
+                    or (att.size if att is not None else 0)
+                    or req.file_size
+                    or 0
+                )
+                received = 0
+                with dest.open("wb") as f:
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        f.write(chunk)
+                        received += len(chunk)
+                        if on_progress is not None:
+                            await on_progress(received, total)
         return dest
 
     async def post_text(self, req, text):

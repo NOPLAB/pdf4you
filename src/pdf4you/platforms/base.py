@@ -32,6 +32,9 @@ class JobRequest:
 # PDF検知時にアダプタが呼ぶコールバック（キューへ投入する）
 JobCallback = Callable[[JobRequest], Awaitable[None]]
 
+# ダウンロード進捗コールバック: (受信済みバイト, 総バイト。総数不明なら0)
+OnDownload = Callable[[int, int], Awaitable[None]]
+
 
 class ProgressHandle(abc.ABC):
     """1件の進捗メッセージを指すハンドル。`update()` で同じメッセージを上書きする。
@@ -62,8 +65,13 @@ class PlatformAdapter(abc.ABC):
         """接続して受信ループを開始する（起動後は動き続ける coroutine）。"""
 
     @abc.abstractmethod
-    async def download(self, req: JobRequest, dest: Path) -> Path:
-        """添付PDFを dest に保存してパスを返す。"""
+    async def download(
+        self, req: JobRequest, dest: Path, *, on_progress: OnDownload | None = None
+    ) -> Path:
+        """添付PDFを dest に保存してパスを返す。
+
+        `on_progress` を渡すと受信の進捗（受信済み/総バイト）を随時通知する。
+        """
 
     @abc.abstractmethod
     async def post_text(self, req: JobRequest, text: str) -> None:

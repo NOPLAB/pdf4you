@@ -14,9 +14,18 @@ from ..config import Settings
 from ..platforms.base import JobRequest, PlatformAdapter
 from . import extractor, summarizer, translator
 from .llm_client import make_client
-from .progress import ProgressEvent, ProgressThrottle, render_progress
+from .progress import ProgressEvent, ProgressThrottle, render_phase, render_progress
 
 logger = logging.getLogger(__name__)
+
+_MB = 1024 * 1024
+
+
+def _fmt_bytes(received: int, total: int) -> str:
+    """受信量をサイズに応じて MB / KB で見やすく整形する。"""
+    if total >= _MB:
+        return f"{received / _MB:.1f}/{total / _MB:.1f} MB"
+    return f"{received / 1024:.0f}/{total / 1024:.0f} KB"
 
 
 async def process_job(
@@ -30,17 +39,42 @@ async def process_job(
         req, f"📥 受け付けました。翻訳・要約を開始します（`{req.filename}`）。"
     )
 
-    # 1. ダウンロード
+    # 1. ダウンロード（バイト数の進捗バー）
     src = job_dir / req.filename
+    dl_throttle = ProgressThrottle()
+
+    async def on_download(received: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = received * 100 / total
+        # 最後（受信完了）は必ず出して 100% で締める。
+        if received < total and not dl_throttle.should_emit(ProgressEvent(overall=pct)):
+            return
+        await progress.update(
+            render_phase("⬇️", "ダウンロード中", pct, _fmt_bytes(received, total))
+        )
+
     try:
-        await adapter.download(req, src)
+        await adapter.download(req, src, on_progress=on_download)
     except Exception:
         logger.exception("ダウンロード失敗: %s", req.id)
         await progress.update("⚠️ ファイルの取得に失敗しました。")
         return
 
-    # 2. テキスト抽出（同期処理なのでスレッドに逃がす）＆ 入力言語の解決
-    text = await asyncio.to_thread(extractor.extract_text, src)
+    # 2. テキスト抽出（ページ数の進捗バー。同期処理なのでスレッドに逃がす）
+    loop = asyncio.get_running_loop()
+    ex_throttle = ProgressThrottle()
+
+    def on_page(current: int, total: int) -> None:
+        # 別スレッドから呼ばれる。間引いたうえでメッセージ更新をループへ委譲する。
+        pct = current * 100 / total if total else 100.0
+        # 最終ページは必ず出す（半端な%で止まって見えるのを防ぐ）。
+        if current < total and not ex_throttle.should_emit(ProgressEvent(overall=pct)):
+            return
+        text = render_phase("📄", "テキスト抽出中", pct, f"{current}/{total} ページ")
+        asyncio.run_coroutine_threadsafe(progress.update(text), loop)
+
+    text = await asyncio.to_thread(extractor.extract_text, src, on_page=on_page)
     lang_in = extractor.resolve_lang_in(settings.lang_in, text)
 
     # 3. 要約と翻訳を並行起動

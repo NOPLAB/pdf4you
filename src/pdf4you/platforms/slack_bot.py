@@ -118,13 +118,20 @@ class SlackAdapter(PlatformAdapter):
             )
             await self._on_job(req)
 
-    async def download(self, req, dest):
+    async def download(self, req, dest, *, on_progress=None):
         headers = {"Authorization": f"Bearer {self._settings.slack_bot_token}"}
         dest.parent.mkdir(parents=True, exist_ok=True)
         async with aiohttp.ClientSession() as session:
             async with session.get(req.file_url, headers=headers) as resp:
                 resp.raise_for_status()
-                dest.write_bytes(await resp.read())
+                total = int(resp.headers.get("Content-Length") or req.file_size or 0)
+                received = 0
+                with dest.open("wb") as f:
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        f.write(chunk)
+                        received += len(chunk)
+                        if on_progress is not None:
+                            await on_progress(received, total)
         return dest
 
     async def post_text(self, req, text):
