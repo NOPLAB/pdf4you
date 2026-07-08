@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     summary_api_key: str = "dummy"
     summary_model: str = ""
 
+    # ---- 外部翻訳サービス（OpenRouter 固定）----
+    # ローカル翻訳を途中で切り替えたとき、ユーザー個別のキーで叩く先。
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "openai/gpt-4o-mini"
+
+    # ---- ユーザーAPIキー保管（DMスラッシュコマンドで登録）----
+    # secret_key は Fernet 鍵。未設定ならキー機能（/setkey・切替ボタン）を無効化する。
+    secret_key: str = ""
+    userkey_db: Path = Path("./work/userkeys.db")
+
     # ---- 動作 ----
     max_concurrency: int = 1
     max_pdf_mb: int = 50
@@ -82,6 +92,14 @@ class Settings(BaseSettings):
     @property
     def max_pdf_bytes(self) -> int:
         return self.max_pdf_mb * 1024 * 1024
+
+    @property
+    def keys_enabled(self) -> bool:
+        """ユーザーAPIキー機能（/setkey・切替ボタン）が使えるか。
+
+        Fernet 鍵（SECRET_KEY）が無いと暗号化保存できないため無効化する。
+        """
+        return bool(self.secret_key)
 
 
 @lru_cache

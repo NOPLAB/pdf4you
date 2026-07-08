@@ -1,8 +1,12 @@
 """Discord アダプタ（discord.py）。
 
 監視チャンネルへの PDF 添付を検知し、その投稿からスレッドを作成して返信する。
+加えて、DM でのスラッシュコマンド（/setkey ほか）で OpenRouter の API キーをユーザー
+ごとに登録でき、翻訳中は「ローカル翻訳をキャンセルして外部サービスを使用」ボタンを
+提示する。
+
 必要: Bot に「Message Content Intent」を有効化。権限: メッセージ送信・スレッド作成・
-ファイル添付。
+ファイル添付。スラッシュコマンドは起動時に `CommandTree.sync()` で同期する。
 """
 
 from __future__ import annotations
@@ -11,9 +15,19 @@ import logging
 import uuid
 
 import discord
+from discord import app_commands
 
 from ..config import Settings
-from .base import JobCallback, JobRequest, PlatformAdapter, ProgressHandle
+from ..jobs.keystore import UserKeyStore, mask_key
+from .base import (
+    ControlHandle,
+    JobCallback,
+    JobControl,
+    JobRequest,
+    PlatformAdapter,
+    ProgressHandle,
+    TranslationOverride,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,28 +51,228 @@ class _DiscordProgress(ProgressHandle):
             logger.warning("進捗メッセージの更新に失敗しました", exc_info=True)
 
 
+class _SetKeyModal(discord.ui.Modal, title="APIキーを登録"):
+    """API キー入力用のモーダル。入力値はチャットに表示されず、応答も ephemeral。"""
+
+    api_key: discord.ui.TextInput = discord.ui.TextInput(
+        label="OpenRouter API キー",
+        placeholder="sk-or-v1-...",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=200,
+    )
+    model: discord.ui.TextInput = discord.ui.TextInput(
+        label="モデル（任意 / 空欄なら既定）",
+        placeholder="openai/gpt-4o-mini",
+        style=discord.TextStyle.short,
+        required=False,
+        max_length=120,
+    )
+
+    def __init__(self, keystore: UserKeyStore):
+        super().__init__()
+        self._keystore = keystore
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        model = self.model.value.strip() or None
+        await self._keystore.set_key(
+            "discord", str(interaction.user.id), self.api_key.value.strip(), model
+        )
+        await interaction.response.send_message(
+            f"✅ APIキーを登録しました（`{mask_key(self.api_key.value.strip())}`）。",
+            ephemeral=True,
+        )
+
+
+class _SwitchView(discord.ui.View):
+    """進捗メッセージとは別に投稿する「外部サービスへ切替」ボタン。"""
+
+    def __init__(self, adapter: DiscordAdapter, req: JobRequest, control: JobControl):
+        super().__init__(timeout=None)
+        self._adapter = adapter
+        self._req = req
+        self._control = control
+
+    @discord.ui.button(
+        label="ローカル翻訳をキャンセルして外部サービスを使用",
+        style=discord.ButtonStyle.primary,
+        emoji="🔄",
+    )
+    async def switch(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._adapter._handle_switch(interaction, self._req, self._control, button, self)
+
+
+class _DiscordControl(ControlHandle):
+    """切替ボタン付きメッセージのハンドル。完了時にボタンを除去する。"""
+
+    def __init__(self, message: discord.Message):
+        self._message = message
+
+    async def close(self, note: str = "") -> None:
+        try:
+            if note:
+                await self._message.edit(content=note[:_DISCORD_LIMIT], view=None)
+            else:
+                await self._message.edit(view=None)
+        except Exception:
+            logger.warning("切替ボタンのクローズに失敗しました", exc_info=True)
+
+
 class DiscordAdapter(PlatformAdapter):
     name = "discord"
 
-    def __init__(self, settings: Settings, on_job: JobCallback):
+    def __init__(
+        self,
+        settings: Settings,
+        on_job: JobCallback,
+        keystore: UserKeyStore | None = None,
+    ):
         self._settings = settings
         self._on_job = on_job
+        self._keystore = keystore
         self._watch = settings.discord_watch_channel_set
         self._allowed = settings.discord_allowed_user_set
         intents = discord.Intents.default()
         intents.message_content = True
         self._client = discord.Client(intents=intents)
+        self._tree = app_commands.CommandTree(self._client)
         self._threads: dict[str, discord.abc.Messageable] = {}
         self._register()
+        self._register_commands()
 
     def is_allowed(self, user_id: str) -> bool:
         return not self._allowed or user_id in self._allowed
 
     def _register(self) -> None:
         @self._client.event
+        async def on_ready() -> None:
+            try:
+                await self._tree.sync()
+                logger.info("スラッシュコマンドを同期しました")
+            except Exception:
+                logger.warning("スラッシュコマンドの同期に失敗しました", exc_info=True)
+
+        @self._client.event
         async def on_message(message: discord.Message) -> None:
             await self._handle_message(message)
 
+    # ------------------------------------------------------------------
+    # スラッシュコマンド（DM 推奨。応答は常に ephemeral）
+    # ------------------------------------------------------------------
+    def _register_commands(self) -> None:
+        keystore = self._keystore
+
+        async def _guard(interaction: discord.Interaction) -> bool:
+            """キー機能が無効なら案内して False を返す。"""
+            if keystore is None:
+                await interaction.response.send_message(
+                    "⚠️ 管理者が SECRET_KEY を設定していないため、キー機能は無効です。",
+                    ephemeral=True,
+                )
+                return False
+            return True
+
+        @self._tree.command(
+            name="setkey", description="OpenRouter APIキーを登録/更新します（DM推奨）"
+        )
+        async def setkey(interaction: discord.Interaction) -> None:
+            if not await _guard(interaction):
+                return
+            await interaction.response.send_modal(_SetKeyModal(keystore))
+
+        @self._tree.command(name="keystatus", description="登録済みAPIキーの状態を表示します")
+        async def keystatus(interaction: discord.Interaction) -> None:
+            if not await _guard(interaction):
+                return
+            stored = await keystore.get_key("discord", str(interaction.user.id))
+            if stored is None:
+                await interaction.response.send_message(
+                    "未登録です。`/setkey` で登録できます。", ephemeral=True
+                )
+                return
+            model = stored.model or f"（既定: {self._settings.openrouter_model}）"
+            await interaction.response.send_message(
+                f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}", ephemeral=True
+            )
+
+        @self._tree.command(name="forgetkey", description="登録済みAPIキーを削除します")
+        async def forgetkey(interaction: discord.Interaction) -> None:
+            if not await _guard(interaction):
+                return
+            removed = await keystore.delete_key("discord", str(interaction.user.id))
+            await interaction.response.send_message(
+                "🗑️ 削除しました。" if removed else "登録はありませんでした。", ephemeral=True
+            )
+
+    # ------------------------------------------------------------------
+    # 翻訳の途中切替（ボタン）
+    # ------------------------------------------------------------------
+    async def offer_translation_switch(
+        self, req: JobRequest, control: JobControl
+    ) -> ControlHandle | None:
+        if self._keystore is None:
+            return None
+        dest = self._dest(req)
+        if dest is None:
+            return None
+        view = _SwitchView(self, req, control)
+        try:
+            message = await dest.send(
+                "💡 ローカル翻訳の代わりに、登録済みの外部サービス（OpenRouter）へ"
+                "切り替えられます。",
+                view=view,
+            )
+        except Exception:
+            logger.warning("切替ボタンの投稿に失敗しました", exc_info=True)
+            return None
+        return _DiscordControl(message)
+
+    async def _handle_switch(
+        self,
+        interaction: discord.Interaction,
+        req: JobRequest,
+        control: JobControl,
+        button: discord.ui.Button,
+        view: discord.ui.View,
+    ) -> None:
+        if str(interaction.user.id) != req.user_id:
+            await interaction.response.send_message(
+                "⚠️ この操作は投稿者のみ実行できます。", ephemeral=True
+            )
+            return
+        if self._keystore is None:
+            await interaction.response.send_message(
+                "⚠️ キー機能が無効です（SECRET_KEY 未設定）。", ephemeral=True
+            )
+            return
+        stored = await self._keystore.get_key("discord", req.user_id)
+        if stored is None:
+            await interaction.response.send_message(
+                "⚠️ APIキーが未登録です。DMで `/setkey` を実行してから再度お試しください。",
+                ephemeral=True,
+            )
+            return
+        override = TranslationOverride(
+            base_url=self._settings.openrouter_base_url,
+            api_key=stored.api_key,
+            model=stored.model or self._settings.openrouter_model,
+        )
+        if not control.request_switch(override):
+            await interaction.response.send_message(
+                "すでに切り替え済みか、翻訳が完了しています。", ephemeral=True
+            )
+            return
+        button.disabled = True
+        try:
+            await interaction.response.edit_message(
+                content="🔄 外部サービス（OpenRouter）に切り替えています…", view=view
+            )
+        except Exception:
+            logger.warning("切替ボタンの更新に失敗しました", exc_info=True)
+
+    # ------------------------------------------------------------------
     async def _handle_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return

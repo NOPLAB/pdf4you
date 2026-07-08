@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
 from ..config import Settings
-from ..platforms.base import JobRequest, PlatformAdapter
+from ..platforms.base import JobControl, JobRequest, PlatformAdapter, TranslationOverride
 from . import extractor, summarizer, translator
 from .llm_client import make_client
 from .progress import ProgressEvent, ProgressThrottle, render_phase, render_progress
@@ -84,25 +85,40 @@ async def process_job(
     )
 
     # 翻訳の進捗で進捗メッセージを上書きする（レート制限/スパム回避のため間引く）。
+    # throttle は切替のたびに作り直す（新しい翻訳の最初の1回を必ず出すため）。
     throttle = ProgressThrottle()
+    prefix = ""  # 切替後は表示にサービス名を添える
 
     async def on_progress(ev: ProgressEvent) -> None:
         if not throttle.should_emit(ev):
             return
-        await progress.update(render_progress(ev))
+        text = render_progress(ev)
+        await progress.update(f"{prefix}\n{text}" if prefix else text)
 
-    translate_task = asyncio.create_task(
-        translator.translate_pdf(
-            src,
-            job_dir,
-            lang_in=lang_in,
-            lang_out=settings.lang_out,
-            base_url=settings.translate_base_url,
-            api_key=settings.translate_api_key,
-            model=settings.translate_model,
-            on_progress=on_progress,
+    def start_translation(override: TranslationOverride | None) -> asyncio.Task:
+        nonlocal throttle
+        throttle = ProgressThrottle()
+        base_url = override.base_url if override else settings.translate_base_url
+        api_key = override.api_key if override else settings.translate_api_key
+        model = override.model if override else settings.translate_model
+        return asyncio.create_task(
+            translator.translate_pdf(
+                src,
+                job_dir,
+                lang_in=lang_in,
+                lang_out=settings.lang_out,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                on_progress=on_progress,
+            )
         )
-    )
+
+    translate_task = start_translation(None)
+
+    # 翻訳中は「外部サービスへ切替」ボタンを提示（対応アダプタのみ。非対応なら None）。
+    control = JobControl()
+    control_ui = await adapter.offer_translation_switch(req, control)
 
     # 4. 要約を先出し
     try:
@@ -112,13 +128,40 @@ async def process_job(
         logger.exception("要約失敗: %s", req.id)
         await adapter.post_text(req, "⚠️ 要約の生成に失敗しました。")
 
-    # 5. 翻訳結果（mono → dual）
+    # 5. 翻訳結果（mono → dual）。翻訳完了 or 切替要求の先着で待つ（切替は一度きり）。
     try:
-        result = await translate_task
+        pending_switch: asyncio.Future | None = control.switch_requested
+        while True:
+            waiters = {translate_task}
+            if pending_switch is not None:
+                waiters.add(pending_switch)
+            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+
+            if translate_task in done:
+                # 翻訳が先に終わった（成功/失敗）。切替が来ていても完了を優先する。
+                result = translate_task.result()
+                break
+
+            # 切替要求（翻訳はまだ動作中）。ローカル翻訳を止めて外部サービスで再実行する。
+            override = pending_switch.result()
+            pending_switch = None  # 切替は一度きり
+            logger.info("翻訳を %s へ切り替えます: %s", override.label, req.id)
+            translate_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await translate_task
+            prefix = f"🔀 外部サービス（{override.label}）で翻訳中"
+            await progress.update(f"🔀 {override.label} に切り替えて翻訳し直します…")
+            translate_task = start_translation(override)
     except Exception:
         logger.exception("翻訳失敗: %s", req.id)
         await progress.update("⚠️ 翻訳に失敗しました。")
+        if control_ui is not None:
+            await control_ui.close("⚠️ 翻訳に失敗しました。")
         return
+
+    if control_ui is not None:
+        note = "🔀 外部サービスで翻訳しました。" if control.requested else "✅ 翻訳が完了しました。"
+        await control_ui.close(note)
 
     stem = Path(req.filename).stem
     posted = False

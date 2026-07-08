@@ -7,6 +7,7 @@ import logging
 
 from .config import get_settings
 from .core.pipeline import process_job
+from .jobs.keystore import UserKeyStore
 from .jobs.queue import JobQueue
 from .jobs.store import FileStore
 from .platforms.base import JobRequest, PlatformAdapter
@@ -27,6 +28,19 @@ async def run() -> None:
     store = FileStore(settings.work_dir, settings.file_retention_days)
     store.cleanup_old()
 
+    # ユーザーAPIキー保管庫（SECRET_KEY 未設定なら機能無効）。
+    keystore: UserKeyStore | None = None
+    if settings.keys_enabled:
+        try:
+            keystore = UserKeyStore(settings.userkey_db, settings.secret_key)
+            await keystore.init()
+            log.info("ユーザーAPIキー機能を有効化しました（DB: %s）", settings.userkey_db)
+        except Exception:
+            log.exception("SECRET_KEY が不正のためキー機能を無効化します")
+            keystore = None
+    else:
+        log.warning("SECRET_KEY 未設定のため、キー登録・翻訳の外部切替は無効です。")
+
     adapters: dict[str, PlatformAdapter] = {}
 
     async def worker(req: JobRequest) -> None:
@@ -43,11 +57,11 @@ async def run() -> None:
     if settings.slack_enabled:
         from .platforms.slack_bot import SlackAdapter
 
-        adapters["slack"] = SlackAdapter(settings, queue.enqueue)
+        adapters["slack"] = SlackAdapter(settings, queue.enqueue, keystore)
     if settings.discord_enabled:
         from .platforms.discord_bot import DiscordAdapter
 
-        adapters["discord"] = DiscordAdapter(settings, queue.enqueue)
+        adapters["discord"] = DiscordAdapter(settings, queue.enqueue, keystore)
 
     if not adapters:
         raise SystemExit(

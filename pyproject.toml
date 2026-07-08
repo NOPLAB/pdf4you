@@ -13,6 +13,8 @@ dependencies = [
     "langdetect>=1.0.9",
     "pydantic-settings>=2.5",
     "pdf2zh-next>=2.9",
+    "aiosqlite>=0.20",
+    "cryptography>=43.0",
 ]
 
 [project.scripts]

@@ -8,6 +8,8 @@
 - 翻訳方向は **原文言語オート判定 → 日本語**（`LANG_IN=auto` / `LANG_OUT=ja`）。
 - 要約と mono 翻訳を **並行実行**し、続けて dual を生成。**mono / dual を両方**スレッドへ投稿。
 - Slack / Discord を **単一プロセス**で並行起動。
+- **ユーザー別 API キー**: DM のスラッシュコマンド `/setkey` で OpenRouter のキーを各自登録。
+  翻訳中に **「ローカル翻訳をキャンセルして外部サービスを使用」** ボタンで OpenRouter へ切替可能。
 
 詳細な要件は [docs/requirements.md](docs/requirements.md) を参照。
 
@@ -43,19 +45,40 @@ src/pdf4you/
 1. [api.slack.com/apps](https://api.slack.com/apps) でアプリを作成（From scratch）。
 2. **Socket Mode** を有効化し、App-Level Token を発行（scope: `connections:write`）→ `SLACK_APP_TOKEN`（`xapp-...`）。
 3. **OAuth & Permissions** の Bot Token Scopes に `chat:write` / `files:read` / `channels:history`
-   （プライベートch等を使う場合は `groups:history` なども）を追加。
+   / `commands`（プライベートch等を使う場合は `groups:history` なども）を追加。
 4. **Event Subscriptions** で bot events に `message.channels`（必要に応じ `message.groups` 等）を購読。
-5. ワークスペースにインストールし、Bot User OAuth Token → `SLACK_BOT_TOKEN`（`xoxb-...`）。
-6. Bot を対象チャンネルに招待する。
+5. **Interactivity & Shortcuts** を ON（Socket Mode なので Request URL 不要）。
+6. **Slash Commands** に `/setkey` `/keystatus` `/forgetkey` を登録（同上、Request URL 不要）。
+7. ワークスペースにインストールし、Bot User OAuth Token → `SLACK_BOT_TOKEN`（`xoxb-...`）。
+8. Bot を対象チャンネルに招待する。
 
 ## Discord のセットアップ
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) で Application → Bot を作成。
    Bot Token → `DISCORD_BOT_TOKEN`。
 2. **Privileged Gateway Intents** の **MESSAGE CONTENT INTENT** を有効化。
-3. OAuth2 URL Generator で scope=`bot`、権限は
+3. OAuth2 URL Generator で scope=`bot` と **`applications.commands`**、権限は
    Send Messages / Create Public Threads / Send Messages in Threads / Attach Files / Read Message History。
 4. 生成された URL でサーバーに招待する。
+5. スラッシュコマンド（`/setkey` ほか）は起動時に自動同期される（Bot の DM でも利用可）。
+   反映まで数分かかる場合がある。
+
+## ユーザー別 API キーと外部サービス切替
+
+ローカル推論（vLLM/Ollama）に加えて、ユーザーが自分の **OpenRouter** キーで翻訳を実行できます。
+
+1. `SECRET_KEY` を `.env` に設定（未設定ならこの機能は無効）。
+   生成: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`
+2. 各ユーザーが Bot の **DM でスラッシュコマンド**を実行:
+   - `/setkey` — モーダルに OpenRouter API キー（と任意でモデル名）を入力して登録。
+     入力値はチャットに残らず、応答は本人だけに見える（ephemeral）。
+   - `/keystatus` — 登録状態をマスク表示で確認。
+   - `/forgetkey` — 登録済みキーを削除。
+3. PDF を投稿して翻訳が始まると、スレッドに **「ローカル翻訳をキャンセルして外部サービスを使用」**
+   ボタンが出る。押すと、実行中のローカル翻訳を停止し、登録済みキーで **OpenRouter** に切り替えて
+   最初から翻訳し直す（要約は切替の影響を受けない）。ボタンは **投稿者本人のみ**操作できる。
+
+キーは **Fernet で暗号化**して SQLite（`USERKEY_DB`）に保存され、平文はログにも DB にも残りません。
 
 ## 翻訳モデルの事前取得（推奨）
 
