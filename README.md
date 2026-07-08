@@ -8,6 +8,7 @@
 - 翻訳方向は **原文言語オート判定 → 日本語**（`LANG_IN=auto` / `LANG_OUT=ja`）。
 - 要約と mono 翻訳を **並行実行**し、続けて dual を生成。**mono / dual を両方**スレッドへ投稿。
 - Slack / Discord を **単一プロセス**で並行起動。
+- **DM 翻訳**: 監視チャンネルだけでなく、Bot への **DM に PDF を送っても翻訳**できる（`ALLOW_DM`）。
 - **ユーザー別 API キー**: DM のスラッシュコマンド `/setkey` で OpenRouter のキーを各自登録。
   翻訳中に **「ローカル翻訳をキャンセルして外部サービスを使用」** ボタンで OpenRouter へ切替可能。
 
@@ -45,12 +46,15 @@ src/pdf4you/
 1. [api.slack.com/apps](https://api.slack.com/apps) でアプリを作成（From scratch）。
 2. **Socket Mode** を有効化し、App-Level Token を発行（scope: `connections:write`）→ `SLACK_APP_TOKEN`（`xapp-...`）。
 3. **OAuth & Permissions** の Bot Token Scopes に `chat:write` / `files:read` / `channels:history`
-   / `commands`（プライベートch等を使う場合は `groups:history` なども）を追加。
-4. **Event Subscriptions** で bot events に `message.channels`（必要に応じ `message.groups` 等）を購読。
+   / `commands`（プライベートch等を使う場合は `groups:history`、**DM利用なら `im:history`** も）を追加。
+4. **Event Subscriptions** で bot events に `message.channels`（必要に応じ `message.groups`、
+   **DM利用なら `message.im`**）を購読。
 5. **Interactivity & Shortcuts** を ON（Socket Mode なので Request URL 不要）。
 6. **Slash Commands** に `/setkey` `/keystatus` `/forgetkey` を登録（同上、Request URL 不要）。
-7. ワークスペースにインストールし、Bot User OAuth Token → `SLACK_BOT_TOKEN`（`xoxb-...`）。
-8. Bot を対象チャンネルに招待する。
+7. **App Home** → Messages Tab を有効化し「Allow users to send Slash commands and messages
+   from the messages tab」を ON（Bot への DM を受け取るため）。
+8. ワークスペースにインストールし、Bot User OAuth Token → `SLACK_BOT_TOKEN`（`xoxb-...`）。
+9. Bot を対象チャンネルに招待する（DM だけで使うなら招待は不要）。
 
 ## Discord のセットアップ
 
@@ -62,6 +66,8 @@ src/pdf4you/
 4. 生成された URL でサーバーに招待する。
 5. スラッシュコマンド（`/setkey` ほか）は起動時に自動同期される（Bot の DM でも利用可）。
    反映まで数分かかる場合がある。
+6. Bot への DM で PDF を送っても翻訳できる（DM するには Bot と同じサーバーに所属しているか、
+   アプリがユーザーインストール対応であること）。
 
 ## ユーザー別 API キーと外部サービス切替
 

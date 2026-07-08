@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     file_retention_days: int = 7
     work_dir: Path = Path("./work")
     log_level: str = "INFO"
+    # DM に直接PDFを送っても翻訳する（監視チャンネル設定に関わらず。アクセス制御は適用）。
+    allow_dm: bool = True
 
     # ------------------------------------------------------------------
     @staticmethod

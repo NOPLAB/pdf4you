@@ -132,6 +132,7 @@ USERKEY_DB=./work/userkeys.db
 MAX_CONCURRENCY=1
 MAX_PDF_MB=50              # 上限は要調整（TBD）
 FILE_RETENTION_DAYS=7
+ALLOW_DM=true             # BotへのDMにPDFを送っても翻訳する（監視ch設定に関わらず。アクセス制御は適用）
 ```
 
 ## 7. 確定した仕様（旧TBD）
@@ -142,6 +143,9 @@ FILE_RETENTION_DAYS=7
 4. 利用範囲: ALLOWED_USERS 未設定なら誰でも可、設定すると特定ユーザー限定
 5. dual戦略: 出力選択ボタンは持たない。要約と並行して mono を生成し、続けて dual を生成、mono/dual を両方投稿
 6. 使用モデル名（具体）: vLLM/Ollama で動かす実モデルは実装時に .env で指定
+7. DM 翻訳: `ALLOW_DM=true`（既定）なら Bot への DM に送られた PDF も翻訳する。監視チャンネル
+   設定は無視するが `ALLOWED_USERS` は適用。Discord は DM 内ではスレッドを作らず直接返信、
+   Slack は IM(`message.im`/`im:history`) の購読・スコープと Messages Tab の有効化が必要。
 
 ## 8. 残TBD
 

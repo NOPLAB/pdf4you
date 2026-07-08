@@ -322,7 +322,12 @@ class SlackAdapter(PlatformAdapter):
             return
 
         channel = event.get("channel", "")
-        if self._watch and channel not in self._watch:
+        is_dm = event.get("channel_type") == "im"
+        if is_dm:
+            # DM(IM) は監視チャンネル設定に関わらず処理する（アクセス制御は下で適用）。
+            if not self._settings.allow_dm:
+                return
+        elif self._watch and channel not in self._watch:
             return
 
         pdfs = [

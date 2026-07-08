@@ -277,15 +277,21 @@ class DiscordAdapter(PlatformAdapter):
         if message.author.bot:
             return
 
+        is_dm = message.guild is None
         channel_id = str(message.channel.id)
-        # スレッド内メッセージの場合は親チャンネルIDで監視判定
-        parent_id = (
-            str(message.channel.parent_id)
-            if isinstance(message.channel, discord.Thread)
-            else channel_id
-        )
-        if self._watch and parent_id not in self._watch and channel_id not in self._watch:
-            return
+        if is_dm:
+            # DM は監視チャンネル設定に関わらず処理する（アクセス制御は下で適用）。
+            if not self._settings.allow_dm:
+                return
+        else:
+            # スレッド内メッセージの場合は親チャンネルIDで監視判定
+            parent_id = (
+                str(message.channel.parent_id)
+                if isinstance(message.channel, discord.Thread)
+                else channel_id
+            )
+            if self._watch and parent_id not in self._watch and channel_id not in self._watch:
+                return
 
         pdfs = [a for a in message.attachments if a.filename.lower().endswith(".pdf")]
         if not pdfs:
@@ -302,22 +308,23 @@ class DiscordAdapter(PlatformAdapter):
                     f"⚠️ サイズ上限（{self._settings.max_pdf_mb}MB）を超えています。"
                 )
                 continue
-            thread = await self._ensure_thread(message, att.filename)
+            dest = await self._ensure_dest(message, att.filename, is_dm)
             req = JobRequest(
                 id=uuid.uuid4().hex[:12],
                 platform=self.name,
                 channel_id=channel_id,
-                thread_ref=str(thread.id),
+                thread_ref=str(dest.id),
                 user_id=user_id,
                 filename=att.filename,
                 file_url=att.url,
                 file_size=att.size,
-                meta={"thread": thread, "attachment": att},
+                meta={"thread": dest, "attachment": att},
             )
             await self._on_job(req)
 
-    async def _ensure_thread(self, message, filename):
-        if isinstance(message.channel, discord.Thread):
+    async def _ensure_dest(self, message, filename, is_dm):
+        # DM ではスレッドを作成できないため、その DM チャンネルへ直接返信する。
+        if is_dm or isinstance(message.channel, discord.Thread):
             self._threads[str(message.channel.id)] = message.channel
             return message.channel
         thread = await message.create_thread(name=f"翻訳: {filename[:80]}")
