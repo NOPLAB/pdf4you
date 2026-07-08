@@ -12,6 +12,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .progress import ProgressEvent
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,8 +23,8 @@ class TranslateResult:
     dual_path: Path | None
 
 
-# 進捗コールバック: (overall_progress[0..100], stage, part_index, total_parts)
-OnProgress = Callable[[float, str, int, int], Awaitable[None]]
+# 進捗コールバック: 1回分の ProgressEvent を受け取る
+OnProgress = Callable[[ProgressEvent], Awaitable[None]]
 
 
 def _to_path(value: object) -> Path | None:
@@ -86,10 +88,15 @@ async def translate_pdf(
             # 進捗通知はベストエフォート。コールバックの失敗で翻訳を止めない。
             try:
                 await on_progress(
-                    float(event.get("overall_progress", 0.0)),
-                    str(event.get("stage", "")),
-                    int(event.get("part_index", 0)),
-                    int(event.get("total_parts", 0)),
+                    ProgressEvent(
+                        overall=float(event.get("overall_progress", 0.0)),
+                        stage=str(event.get("stage", "")),
+                        stage_progress=float(event.get("stage_progress", 0.0)),
+                        stage_current=int(event.get("stage_current", 0)),
+                        stage_total=int(event.get("stage_total", 0)),
+                        part_index=int(event.get("part_index", 1)),
+                        total_parts=int(event.get("total_parts", 1)),
+                    )
                 )
             except Exception:
                 logger.warning("進捗コールバックでエラーが発生しました", exc_info=True)

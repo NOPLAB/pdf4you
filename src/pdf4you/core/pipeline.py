@@ -14,7 +14,7 @@ from ..config import Settings
 from ..platforms.base import JobRequest, PlatformAdapter
 from . import extractor, summarizer, translator
 from .llm_client import make_client
-from .progress import ProgressThrottle, render_bar
+from .progress import ProgressEvent, ProgressThrottle, render_progress
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +52,10 @@ async def process_job(
     # 翻訳の進捗で進捗メッセージを上書きする（レート制限/スパム回避のため間引く）。
     throttle = ProgressThrottle()
 
-    async def on_progress(overall, stage, part_index, total_parts):
-        if not throttle.should_emit(overall):
+    async def on_progress(ev: ProgressEvent) -> None:
+        if not throttle.should_emit(ev):
             return
-        await progress.update(
-            render_bar(overall, stage=stage, part_index=part_index, total_parts=total_parts)
-        )
+        await progress.update(render_progress(ev))
 
     translate_task = asyncio.create_task(
         translator.translate_pdf(
