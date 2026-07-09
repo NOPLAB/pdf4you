@@ -53,7 +53,7 @@ def _to_mrkdwn(text: str) -> str:
     return text
 
 
-def _setkey_modal_view() -> dict:
+def _setkey_modal_view(default_model: str) -> dict:
     return {
         "type": "modal",
         "callback_id": _SETKEY_MODAL,
@@ -79,7 +79,10 @@ def _setkey_modal_view() -> dict:
                 "element": {
                     "type": "plain_text_input",
                     "action_id": "value",
-                    "placeholder": {"type": "plain_text", "text": "openai/gpt-4o-mini"},
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": default_model or "openai/gpt-4o-mini",
+                    },
                 },
             },
         ],
@@ -167,7 +170,8 @@ class SlackAdapter(PlatformAdapter):
                 return
             await ack()
             await client.views_open(
-                trigger_id=body["trigger_id"], view=_setkey_modal_view()
+                trigger_id=body["trigger_id"],
+                view=_setkey_modal_view(self._settings.openrouter_model),
             )
 
         @self._app.view(_SETKEY_MODAL)
@@ -315,19 +319,32 @@ class SlackAdapter(PlatformAdapter):
 
     # ------------------------------------------------------------------
     async def _handle_message(self, event: dict) -> None:
+        channel_type = event.get("channel_type")
+        logger.debug(
+            "message受信: channel_type=%s subtype=%s user=%s files=%d bot_id=%s",
+            channel_type,
+            event.get("subtype"),
+            event.get("user"),
+            len(event.get("files") or []),
+            event.get("bot_id"),
+        )
         # bot自身/編集・削除などは無視。ファイル共有と通常メッセージのみ通す。
         if event.get("bot_id"):
+            logger.debug("無視: bot自身のメッセージ")
             return
         if event.get("subtype") not in (None, "file_share"):
+            logger.debug("無視: 対象外の subtype=%s", event.get("subtype"))
             return
 
         channel = event.get("channel", "")
-        is_dm = event.get("channel_type") == "im"
+        is_dm = channel_type == "im"
         if is_dm:
             # DM(IM) は監視チャンネル設定に関わらず処理する（アクセス制御は下で適用）。
             if not self._settings.allow_dm:
+                logger.debug("無視: DM だが ALLOW_DM=false")
                 return
         elif self._watch and channel not in self._watch:
+            logger.debug("無視: 監視対象外チャンネル %s", channel)
             return
 
         pdfs = [
@@ -336,12 +353,17 @@ class SlackAdapter(PlatformAdapter):
             if f.get("filetype") == "pdf" or f.get("name", "").lower().endswith(".pdf")
         ]
         if not pdfs:
+            logger.debug("無視: PDF 添付なし（channel_type=%s）", channel_type)
             return
 
         user = event.get("user", "")
         if not self.is_allowed(user):
             logger.info("許可されていないユーザーからの投稿を無視: %s", user)
             return
+
+        logger.info(
+            "PDF受理: user=%s channel=%s is_dm=%s files=%d", user, channel, is_dm, len(pdfs)
+        )
 
         thread_ts = event.get("thread_ts") or event.get("ts", "")
         for f in pdfs:
