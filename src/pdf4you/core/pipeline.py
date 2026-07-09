@@ -2,6 +2,11 @@
 
 抽出 → （要約 ∥ 翻訳）を並行実行し、完了したものからスレッドへ投稿する。
 要約は先に返ることが多いので先出しし、翻訳は mono → dual の順に添付する。
+
+翻訳は「ローカル翻訳（同時実行を `TranslationGate` で制限）」が基本だが、順番待ちの
+間に投稿者が「外部サービスを使用」ボタンを押すと、待機列から離脱して外部サービスで
+即座に翻訳できる（ローカルの順番待ちをスキップする）。ローカル翻訳が走り出した後でも
+同じボタンで外部サービスへ切り替えられる（実行中の翻訳を止めてやり直す）。
 """
 
 from __future__ import annotations
@@ -10,12 +15,16 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import Settings
 from ..platforms.base import JobControl, JobRequest, PlatformAdapter, TranslationOverride
 from . import extractor, summarizer, translator
 from .llm_client import make_client
 from .progress import ProgressEvent, ProgressThrottle, render_phase, render_progress
+
+if TYPE_CHECKING:
+    from ..jobs.queue import TranslationGate
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +43,9 @@ async def process_job(
     adapter: PlatformAdapter,
     settings: Settings,
     job_dir: Path,
+    gate: TranslationGate,
 ) -> None:
-    # 受付〜完了までを1つのメッセージで表現する（翻訳中はバーで上書きする）。
+    # 受付〜完了までを1つのメッセージで表現する（順番待ち・翻訳中はここを上書きする）。
     progress = await adapter.start_progress(
         req, f"📥 受け付けました。翻訳・要約を開始します（`{req.filename}`）。"
     )
@@ -51,9 +61,7 @@ async def process_job(
         # 最後（受信完了）は必ず出して 100% で締める。
         if received < total and not dl_throttle.should_emit(ProgressEvent(overall=pct)):
             return
-        await progress.update(
-            render_phase("⬇️", "ダウンロード中", pct, _fmt_bytes(received, total))
-        )
+        await progress.update(render_phase("⬇️", "ダウンロード中", pct, _fmt_bytes(received, total)))
 
     try:
         await adapter.download(req, src, on_progress=on_download)
@@ -78,11 +86,22 @@ async def process_job(
     text = await asyncio.to_thread(extractor.extract_text, src, on_page=on_page)
     lang_in = extractor.resolve_lang_in(settings.lang_in, text)
 
-    # 3. 要約と翻訳を並行起動
+    # 3. 要約は翻訳と独立して並行に走らせ、準備でき次第スレッドへ先出しする。
+    #    （ローカル翻訳の順番待ち中でも要約だけは早く届けられる。）
     summary_client = make_client(settings.summary_base_url, settings.summary_api_key)
     summary_task = asyncio.create_task(
         summarizer.summarize(summary_client, settings.summary_model, text)
     )
+
+    async def deliver_summary() -> None:
+        try:
+            summary = await summary_task
+            await adapter.post_text(req, f"📝 **要約**\n\n{summary}")
+        except Exception:
+            logger.exception("要約失敗: %s", req.id)
+            await adapter.post_text(req, "⚠️ 要約の生成に失敗しました。")
+
+    summary_deliver = asyncio.create_task(deliver_summary())
 
     # 翻訳の進捗で進捗メッセージを上書きする（レート制限/スパム回避のため間引く）。
     # throttle は切替のたびに作り直す（新しい翻訳の最初の1回を必ず出すため）。
@@ -114,23 +133,56 @@ async def process_job(
             )
         )
 
-    translate_task = start_translation(None)
-
-    # 翻訳中は「外部サービスへ切替」ボタンを提示（対応アダプタのみ。非対応なら None）。
+    # 4. 「外部サービスへ切替」ボタンを翻訳開始前に提示する（対応アダプタのみ。
+    #    順番待ち中でも押せるようにするため、スロット確保より先に出す）。
     control = JobControl()
     control_ui = await adapter.offer_translation_switch(req, control)
+    switch_fut = control.switch_requested
 
-    # 4. 要約を先出し
-    try:
-        summary = await summary_task
-        await adapter.post_text(req, f"📝 **要約**\n\n{summary}")
-    except Exception:
-        logger.exception("要約失敗: %s", req.id)
-        await adapter.post_text(req, "⚠️ 要約の生成に失敗しました。")
+    # 5. ローカル翻訳スロットの確保を待つ（順番待ち表示）。待っている間に外部サービス
+    #    への切替が要求されたら、待機列から離脱して外部サービスで翻訳する。
+    slot_held = False
 
-    # 5. 翻訳結果（mono → dual）。翻訳完了 or 切替要求の先着で待つ（切替は一度きり）。
+    async def on_wait(position: int) -> None:
+        if control_ui is not None:
+            await progress.update(
+                f"⏳ ローカル翻訳の順番待ちです（{position} 番目）。\n"
+                "「外部サービスを使用」ボタンを押すと、待たずに翻訳を始められます。"
+            )
+        else:
+            await progress.update(f"⏳ ローカル翻訳の順番待ちです（{position} 番目）。")
+
+    acquire_task = asyncio.create_task(gate.acquire(on_position=on_wait))
+    await asyncio.wait({acquire_task, switch_fut}, return_when=asyncio.FIRST_COMPLETED)
+
+    if switch_fut.done():
+        # 順番待ちをスキップして外部サービスで翻訳する（ボタンが押された）。
+        if acquire_task.done() and not acquire_task.cancelled():
+            # ちょうどスロットを取得していたら返し、次の順番待ちに譲る。
+            await gate.release()
+        else:
+            acquire_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await acquire_task
+        override = switch_fut.result()
+        logger.info("順番待ちをスキップし %s で翻訳します: %s", override.label, req.id)
+        prefix = f"🔀 外部サービス（{override.label}）で翻訳中"
+        await progress.update(f"🔀 {override.label} で翻訳します…")
+        translate_task = start_translation(override)
+    else:
+        # 順番が来てローカル翻訳スロットを確保できた。切替は実行フェーズで受け付ける。
+        acquire_task.result()  # 取得確定（例外なし）
+        slot_held = True
+        await progress.update("🌐 ローカル翻訳を開始します…")
+        translate_task = start_translation(None)
+
+    # 6. 翻訳結果（mono → dual）。ローカル実行中はさらに外部切替を受け付ける
+    #    （翻訳完了 or 切替要求の先着で待つ。切替は一度きり）。
     try:
-        pending_switch: asyncio.Future | None = control.switch_requested
+        # ローカル翻訳中で、かつ切替がまだ消費されていなければ実行中切替を待てる。
+        pending_switch: asyncio.Future | None = (
+            switch_fut if (slot_held and not switch_fut.done()) else None
+        )
         while True:
             waiters = {translate_task}
             if pending_switch is not None:
@@ -149,6 +201,10 @@ async def process_job(
             translate_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await translate_task
+            # ローカルから外部へ移るのでスロットを返し、次の順番待ちを繰り上げる。
+            if slot_held:
+                await gate.release()
+                slot_held = False
             prefix = f"🔀 外部サービス（{override.label}）で翻訳中"
             await progress.update(f"🔀 {override.label} に切り替えて翻訳し直します…")
             translate_task = start_translation(override)
@@ -157,11 +213,22 @@ async def process_job(
         await progress.update("⚠️ 翻訳に失敗しました。")
         if control_ui is not None:
             await control_ui.close("⚠️ 翻訳に失敗しました。")
+        with contextlib.suppress(Exception):
+            await summary_deliver
         return
+    finally:
+        # 成功・例外いずれでもローカルスロットは必ず返す（実行中切替で解放済みなら何もしない）。
+        if slot_held:
+            await gate.release()
+            slot_held = False
 
     if control_ui is not None:
         note = "🔀 外部サービスで翻訳しました。" if control.requested else "✅ 翻訳が完了しました。"
         await control_ui.close(note)
+
+    # 要約の先出しが未完なら待ち合わせる（この時点ではほぼ完了しているはず）。
+    with contextlib.suppress(Exception):
+        await summary_deliver
 
     stem = Path(req.filename).stem
     posted = False
@@ -176,6 +243,4 @@ async def process_job(
         )
         posted = True
 
-    await progress.update(
-        "✅ 完了しました。" if posted else "⚠️ 翻訳PDFを生成できませんでした。"
-    )
+    await progress.update("✅ 完了しました。" if posted else "⚠️ 翻訳PDFを生成できませんでした。")

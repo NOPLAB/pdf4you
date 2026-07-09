@@ -2,8 +2,8 @@
 
 監視チャンネルへの PDF 添付を検知し、その投稿からスレッドを作成して返信する。
 加えて、DM でのスラッシュコマンド（/setkey ほか）で OpenRouter の API キーをユーザー
-ごとに登録でき、翻訳中は「外部サービスを使用」ボタンを
-提示する。
+ごとに登録でき、ローカル翻訳の順番待ち中・実行中は「外部サービスを使用」ボタンを
+提示して、順番待ちのスキップや実行中の切り替えを行える。
 
 必要: Bot に「Message Content Intent」を有効化。権限: メッセージ送信・スレッド作成・
 ファイル添付。スラッシュコマンドは起動時に `CommandTree.sync()` で同期する。
@@ -98,9 +98,7 @@ class _SwitchView(discord.ui.View):
         style=discord.ButtonStyle.primary,
         emoji="🔄",
     )
-    async def switch(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def switch(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._adapter._handle_switch(interaction, self._req, self._control, button, self)
 
 
@@ -220,8 +218,8 @@ class DiscordAdapter(PlatformAdapter):
         view = _SwitchView(self, req, control)
         try:
             message = await dest.send(
-                "💡 ローカル翻訳の代わりに、登録済みの外部サービス（OpenRouter）へ"
-                "切り替えられます。",
+                "💡 ローカル翻訳の順番待ちをスキップして、登録済みの外部サービス"
+                "（OpenRouter）で今すぐ翻訳できます。",
                 view=view,
             )
         except Exception:

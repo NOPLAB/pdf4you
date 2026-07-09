@@ -2,8 +2,8 @@
 
 監視チャンネルへの PDF 添付を検知して JobRequest を発行し、スレッド（thread_ts）へ
 テキスト・ファイルを投稿する。加えて、スラッシュコマンド（/setkey ほか）で OpenRouter
-の API キーをユーザーごとに登録でき、翻訳中は「ローカル翻訳をキャンセルして外部
-サービスを使用」ボタン（Block Kit）を提示する。
+の API キーをユーザーごとに登録でき、ローカル翻訳の順番待ち中・実行中は「外部サービス
+を使用」ボタン（Block Kit）を提示して、順番待ちのスキップや実行中の切り替えを行える。
 
 必要スコープ: `files:read`, `chat:write`, `commands`, `channels:history`（対象チャンネル
 種別に応じて groups/im/mpim も）。スラッシュコマンドはアプリ設定側で `/setkey`
@@ -232,8 +232,8 @@ class SlackAdapter(PlatformAdapter):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "💡 ローカル翻訳の代わりに、登録済みの外部サービス"
-                    "（OpenRouter）へ切り替えられます。",
+                    "text": "💡 ローカル翻訳の順番待ちをスキップして、登録済みの外部"
+                    "サービス（OpenRouter）で今すぐ翻訳できます。",
                 },
             },
             {
@@ -270,9 +270,7 @@ class SlackAdapter(PlatformAdapter):
         token = actions[0].get("value") if actions else None
         user = body.get("user", {}).get("id", "")
         channel = body.get("channel", {}).get("id", "")
-        msg_ts = body.get("container", {}).get("message_ts") or body.get("message", {}).get(
-            "ts"
-        )
+        msg_ts = body.get("container", {}).get("message_ts") or body.get("message", {}).get("ts")
         thread_ts = body.get("message", {}).get("thread_ts")
 
         async def ephem(text: str) -> None:

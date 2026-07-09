@@ -8,7 +8,7 @@ import logging
 from .config import get_settings
 from .core.pipeline import process_job
 from .jobs.keystore import UserKeyStore
-from .jobs.queue import JobQueue
+from .jobs.queue import JobQueue, TranslationGate
 from .jobs.store import FileStore
 from .platforms.base import JobRequest, PlatformAdapter
 
@@ -43,15 +43,18 @@ async def run() -> None:
 
     adapters: dict[str, PlatformAdapter] = {}
 
+    # ローカル翻訳の同時実行を絞るゲート（外部サービス翻訳はこの制限を受けない）。
+    gate = TranslationGate(settings.max_concurrency)
+
     async def worker(req: JobRequest) -> None:
         adapter = adapters.get(req.platform)
         if adapter is None:
             log.error("未知のプラットフォーム: %s", req.platform)
             return
         job_dir = store.job_dir(req.id)
-        await process_job(req, adapter, settings, job_dir)
+        await process_job(req, adapter, settings, job_dir, gate)
 
-    queue = JobQueue(worker, settings.max_concurrency)
+    queue = JobQueue(worker)
 
     # トークンが設定されている方だけ起動（重いSDKは遅延import）
     if settings.slack_enabled:
@@ -68,7 +71,6 @@ async def run() -> None:
             "Slack / Discord いずれのトークンも設定されていません。.env を確認してください。"
         )
 
-    queue.start()
     log.info("pdf4you 起動: %s", ", ".join(adapters))
     await asyncio.gather(*(a.start() for a in adapters.values()))
 

@@ -109,8 +109,9 @@ class UserKeyStore:
             api_key = self._fernet.decrypt(row[0]).decode()
         except InvalidToken:
             # SECRET_KEY を変更した等で復号できない場合。壊れたレコードは無視する。
-            logger.warning("キーの復号に失敗しました（SECRET_KEY 変更の可能性）: %s/%s",
-                           platform, user_id)
+            logger.warning(
+                "キーの復号に失敗しました（SECRET_KEY 変更の可能性）: %s/%s", platform, user_id
+            )
             return None
         return StoredKey(api_key=api_key, model=row[1])
 
