@@ -240,7 +240,7 @@ class SlackAdapter(PlatformAdapter):
                         "action_id": _SWITCH_ACTION,
                         "text": {
                             "type": "plain_text",
-                            "text": "ローカル翻訳をキャンセルして外部サービスを使用",
+                            "text": "外部サービスを使用",
                         },
                         "style": "primary",
                         "value": token,

@@ -2,7 +2,7 @@
 
 監視チャンネルへの PDF 添付を検知し、その投稿からスレッドを作成して返信する。
 加えて、DM でのスラッシュコマンド（/setkey ほか）で OpenRouter の API キーをユーザー
-ごとに登録でき、翻訳中は「ローカル翻訳をキャンセルして外部サービスを使用」ボタンを
+ごとに登録でき、翻訳中は「外部サービスを使用」ボタンを
 提示する。
 
 必要: Bot に「Message Content Intent」を有効化。権限: メッセージ送信・スレッド作成・
@@ -94,7 +94,7 @@ class _SwitchView(discord.ui.View):
         self._control = control
 
     @discord.ui.button(
-        label="ローカル翻訳をキャンセルして外部サービスを使用",
+        label="外部サービスを使用",
         style=discord.ButtonStyle.primary,
         emoji="🔄",
     )
