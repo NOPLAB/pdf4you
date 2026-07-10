@@ -24,6 +24,7 @@ from .llm_client import make_client
 from .progress import ProgressEvent, ProgressThrottle, render_phase, render_progress
 
 if TYPE_CHECKING:
+    from ..jobs.jobdb import JobStateStore
     from ..jobs.queue import TranslationGate
 
 logger = logging.getLogger(__name__)
@@ -44,31 +45,43 @@ async def process_job(
     settings: Settings,
     job_dir: Path,
     gate: TranslationGate,
+    state: JobStateStore | None = None,
 ) -> None:
+    resumed = bool(req.meta.get("resumed"))
+
     # 受付〜完了までを1つのメッセージで表現する（順番待ち・翻訳中はここを上書きする）。
     progress = await adapter.start_progress(
-        req, f"📥 受け付けました。翻訳・要約を開始します（`{req.filename}`）。"
+        req,
+        f"🔁 再起動のため処理を再開します（`{req.filename}`）。"
+        if resumed
+        else f"📥 受け付けました。翻訳・要約を開始します（`{req.filename}`）。",
     )
 
-    # 1. ダウンロード（バイト数の進捗バー）
+    # 1. ダウンロード（バイト数の進捗バー）。再開時にダウンロード済みファイルが
+    #    残っていればそれを使う（Discord の添付URLは期限切れの可能性があるため）。
     src = job_dir / req.filename
-    dl_throttle = ProgressThrottle()
+    if resumed and req.file_size > 0 and src.exists() and src.stat().st_size == req.file_size:
+        logger.info("再開: ダウンロード済みファイルを再利用します: %s", req.id)
+    else:
+        dl_throttle = ProgressThrottle()
 
-    async def on_download(received: int, total: int) -> None:
-        if total <= 0:
-            return
-        pct = received * 100 / total
-        # 最後（受信完了）は必ず出して 100% で締める。
-        if received < total and not dl_throttle.should_emit(ProgressEvent(overall=pct)):
-            return
-        await progress.update(render_phase("⬇️", "ダウンロード中", pct, _fmt_bytes(received, total)))
+        async def on_download(received: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = received * 100 / total
+            # 最後（受信完了）は必ず出して 100% で締める。
+            if received < total and not dl_throttle.should_emit(ProgressEvent(overall=pct)):
+                return
+            await progress.update(
+                render_phase("⬇️", "ダウンロード中", pct, _fmt_bytes(received, total))
+            )
 
-    try:
-        await adapter.download(req, src, on_progress=on_download)
-    except Exception:
-        logger.exception("ダウンロード失敗: %s", req.id)
-        await progress.update("⚠️ ファイルの取得に失敗しました。")
-        return
+        try:
+            await adapter.download(req, src, on_progress=on_download)
+        except Exception:
+            logger.exception("ダウンロード失敗: %s", req.id)
+            await progress.update("⚠️ ファイルの取得に失敗しました。")
+            return
 
     # 2. テキスト抽出（ページ数の進捗バー。同期処理なのでスレッドに逃がす）
     loop = asyncio.get_running_loop()
@@ -88,20 +101,28 @@ async def process_job(
 
     # 3. 要約は翻訳と独立して並行に走らせ、準備でき次第スレッドへ先出しする。
     #    （ローカル翻訳の順番待ち中でも要約だけは早く届けられる。）
-    summary_client = make_client(settings.summary_base_url, settings.summary_api_key)
-    summary_task = asyncio.create_task(
-        summarizer.summarize(summary_client, settings.summary_model, text)
-    )
+    #    再開時に投稿済みなら二重投稿になるためスキップし、翻訳だけやり直す。
+    summary_deliver: asyncio.Task | None = None
+    if not req.meta.get("summary_posted"):
+        summary_client = make_client(settings.summary_base_url, settings.summary_api_key)
+        summary_task = asyncio.create_task(
+            summarizer.summarize(summary_client, settings.summary_model, text)
+        )
 
-    async def deliver_summary() -> None:
-        try:
-            summary = await summary_task
-            await adapter.post_text(req, f"📝 **要約**\n\n{summary}")
-        except Exception:
-            logger.exception("要約失敗: %s", req.id)
-            await adapter.post_text(req, "⚠️ 要約の生成に失敗しました。")
+        async def deliver_summary() -> None:
+            try:
+                summary = await summary_task
+                await adapter.post_text(req, f"📝 **要約**\n\n{summary}")
+            except Exception:
+                logger.exception("要約失敗: %s", req.id)
+                await adapter.post_text(req, "⚠️ 要約の生成に失敗しました。")
+                return
+            # 投稿できたら記録しておく（再開時にスキップするため。失敗しても致命的でない）。
+            if state is not None:
+                with contextlib.suppress(Exception):
+                    await state.mark_summary_posted(req.id)
 
-    summary_deliver = asyncio.create_task(deliver_summary())
+        summary_deliver = asyncio.create_task(deliver_summary())
 
     # 翻訳の進捗で進捗メッセージを上書きする（レート制限/スパム回避のため間引く）。
     # throttle は切替のたびに作り直す（新しい翻訳の最初の1回を必ず出すため）。
@@ -213,8 +234,9 @@ async def process_job(
         await progress.update("⚠️ 翻訳に失敗しました。")
         if control_ui is not None:
             await control_ui.close("⚠️ 翻訳に失敗しました。")
-        with contextlib.suppress(Exception):
-            await summary_deliver
+        if summary_deliver is not None:
+            with contextlib.suppress(Exception):
+                await summary_deliver
         return
     finally:
         # 成功・例外いずれでもローカルスロットは必ず返す（実行中切替で解放済みなら何もしない）。
@@ -227,8 +249,9 @@ async def process_job(
         await control_ui.close(note)
 
     # 要約の先出しが未完なら待ち合わせる（この時点ではほぼ完了しているはず）。
-    with contextlib.suppress(Exception):
-        await summary_deliver
+    if summary_deliver is not None:
+        with contextlib.suppress(Exception):
+            await summary_deliver
 
     stem = Path(req.filename).stem
     posted = False

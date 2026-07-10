@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
@@ -212,7 +213,7 @@ class DiscordAdapter(PlatformAdapter):
     ) -> ControlHandle | None:
         if self._keystore is None:
             return None
-        dest = self._dest(req)
+        dest = await self._resolve_dest(req)
         if dest is None:
             return None
         view = _SwitchView(self, req, control)
@@ -329,8 +330,31 @@ class DiscordAdapter(PlatformAdapter):
         self._threads[str(thread.id)] = thread
         return thread
 
-    def _dest(self, req):
-        return req.meta.get("thread") or self._threads.get(req.thread_ref)
+    async def _resolve_dest(self, req) -> discord.abc.Messageable | None:
+        """投稿先（スレッド/DMチャンネル）を解決する。
+
+        通常は `meta` のライブオブジェクトか作成時のキャッシュで足りるが、再起動後の
+        再開ジョブはどちらも無いため、`thread_ref` の ID から API で取得し直す。
+        """
+        dest = req.meta.get("thread") or self._threads.get(req.thread_ref)
+        if dest is not None:
+            return dest
+        try:
+            channel_id = int(req.thread_ref)
+            dest = self._client.get_channel(channel_id) or await self._client.fetch_channel(
+                channel_id
+            )
+        except Exception:
+            logger.warning("投稿先の再解決に失敗しました: %s", req.thread_ref, exc_info=True)
+            return None
+        self._threads[req.thread_ref] = dest
+        return dest
+
+    async def _dest_or_raise(self, req) -> discord.abc.Messageable:
+        dest = await self._resolve_dest(req)
+        if dest is None:
+            raise RuntimeError(f"投稿先を解決できません: thread_ref={req.thread_ref}")
+        return dest
 
     async def download(self, req, dest, *, on_progress=None):
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -361,20 +385,26 @@ class DiscordAdapter(PlatformAdapter):
         return dest
 
     async def post_text(self, req, text):
-        thread = self._dest(req)
+        thread = await self._dest_or_raise(req)
         for chunk in _split(text):
             await thread.send(chunk)
 
     async def start_progress(self, req, text):
-        thread = self._dest(req)
+        thread = await self._dest_or_raise(req)
         message = await thread.send(text[:_DISCORD_LIMIT])
         return _DiscordProgress(message)
 
     async def upload_file(self, req, path, *, title, comment=""):
-        thread = self._dest(req)
+        thread = await self._dest_or_raise(req)
         if comment:
             await thread.send(comment)
         await thread.send(file=discord.File(str(path), filename=title))
+
+    async def wait_ready(self) -> None:
+        # `Client.wait_until_ready()` はログイン前に呼ぶと例外になるため、
+        # `start()` と並行に呼ばれても安全なポーリングで待つ。
+        while not self._client.is_ready():
+            await asyncio.sleep(0.5)
 
     async def start(self):
         logger.info("Discordアダプタを起動します")

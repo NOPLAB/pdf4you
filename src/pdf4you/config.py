@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     secret_key: str = ""
     userkey_db: Path = Path("./work/userkeys.db")
 
+    # ---- 処理中ジョブの永続化（再起動時の翻訳再開）----
+    jobstate_db: Path = Path("./work/jobs.db")
+
     # ---- 動作 ----
     max_concurrency: int = 1
     max_pdf_mb: int = 50

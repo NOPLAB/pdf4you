@@ -115,6 +115,13 @@ class PlatformAdapter(abc.ABC):
     async def start(self) -> None:
         """接続して受信ループを開始する（起動後は動き続ける coroutine）。"""
 
+    async def wait_ready(self) -> None:
+        """投稿可能になるまで待つ（再起動時のジョブ再開が使う）。
+
+        既定は即時リターン。接続完了を待つ必要があるアダプタ（Discord）だけ上書きする。
+        """
+        return
+
     @abc.abstractmethod
     async def download(
         self, req: JobRequest, dest: Path, *, on_progress: OnDownload | None = None

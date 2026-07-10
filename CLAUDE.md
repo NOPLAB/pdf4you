@@ -27,7 +27,7 @@ docker compose up -d --build     # Docker 常時稼働（ビルド時に warmup 
 **単一プロセス・全 asyncio**。`__main__.run()` が Slack/Discord アダプタとジョブワーカーを `asyncio.gather` で並行起動する。3 層構成：
 
 - **`platforms/`** — プラットフォーム抽象化。`base.PlatformAdapter` が「ダウンロード／スレッド投稿／ファイル添付／進捗メッセージ編集／切替ボタン提示／アクセス制御」を抽象メソッドで定義し、`slack_bot.py`（Bolt Socket Mode）と `discord_bot.py`（discord.py）が実装する。パイプラインはプラットフォーム非依存。
-- **`jobs/`** — `queue.JobQueue`（`asyncio.Queue` ＋ `MAX_CONCURRENCY` 個のワーカー）、`store.FileStore`（ジョブ単位の作業ディレクトリと保持期間クリーンアップ）、`keystore.UserKeyStore`（ユーザー別 API キーを Fernet 暗号化して aiosqlite に保存）。
+- **`jobs/`** — `queue.JobQueue`（`asyncio.Queue` ＋ `MAX_CONCURRENCY` 個のワーカー）、`store.FileStore`（ジョブ単位の作業ディレクトリと保持期間クリーンアップ）、`keystore.UserKeyStore`（ユーザー別 API キーを Fernet 暗号化して aiosqlite に保存）、`jobdb.JobStateStore`（処理中ジョブを aiosqlite に記録し、再起動時に中断ジョブを再投入＝翻訳の再開）。
 - **`core/`** — `pipeline.process_job` が統括。`extractor`（PyMuPDF 抽出＋言語判定）→ `summarizer`（要約）∥ `translator`（pdf2zh-next）を並行実行し、完了順にスレッドへ投稿する。`progress` は進捗バー整形とスロットリング、`llm_client` は OpenAI 互換クライアント生成。
 
 **データフロー**: アダプタが PDF を検知 → `JobRequest` を生成 → `queue.enqueue` → ワーカーが `process_job(req, adapter, settings, job_dir)` を実行。`JobRequest.meta` は同一プロセス内のライブオブジェクト受け渡しに使う自由領域（Discord は `thread` / `attachment` オブジェクトをここで渡す）。
@@ -47,6 +47,8 @@ docker compose up -d --build     # Docker 常時稼働（ビルド時に warmup 
 - **重い SDK は遅延 import**。Slack/Discord SDK（`__main__` 内）と pdf2zh-next（`translator.translate_pdf` 内）は使う時だけ import して起動を速く保つ。
 
 - **進捗はスロットリングされる**。`ProgressThrottle` が「一定秒経過＋一定 % 進行 or 工程切替」のときだけ更新を許可し、Slack のレート制限・メッセージ編集スパムを避ける。翻訳を切り替えるたびに throttle を作り直す（新翻訳の初回を必ず出すため）。同期の抽出処理は `asyncio.to_thread` に逃がし、別スレッドからの進捗は `run_coroutine_threadsafe` でループへ委譲する。
+
+- **処理中ジョブは SQLite（`JOBSTATE_DB`）に永続化される**。受付時（`enqueue` のラッパ）に記録し、処理終了（成功・失敗とも）で削除する。起動時に残っているレコード＝中断ジョブを `wait_ready()`（Discord は接続完了待ち）後に再投入して翻訳をやり直す。pdf2zh-next は途中再開できないため「再開」はジョブ単位のやり直し。要約は `summary_posted` フラグで二重投稿を防ぎ、ダウンロード済みファイルはサイズ一致時に再利用する（Discord 添付 URL の期限切れ対策）。`meta` のライブオブジェクトは復元できないので、Discord は `thread_ref` から `fetch_channel` で宛先を再解決する。
 
 - **DM 翻訳**（`ALLOW_DM=true`）。監視チャンネル設定を無視するがアクセス制御（`ALLOWED_USERS`）は適用。Discord は DM 内でスレッドを作れないので直接返信、Slack は IM 購読とスコープが別途必要。
 
