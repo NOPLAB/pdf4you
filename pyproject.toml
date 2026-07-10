@@ -3,6 +3,8 @@ name = "pdf4you"
 version = "0.1.0"
 description = "特定チャンネルに投稿されたPDFを翻訳(pdf2zh-next)・要約してスレッドに返信するBot"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "openai>=1.40",
