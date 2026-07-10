@@ -7,8 +7,9 @@
 
 必要スコープ: `files:read`, `chat:write`, `commands`, `channels:history`（対象チャンネル
 種別に応じて groups/im/mpim も）。スラッシュコマンドはアプリ設定側で `/setkey`
-`/keystatus` `/forgetkey` を宣言し、Interactivity を有効化しておくこと（Socket Mode
-なので Request URL は不要）。
+`/keystatus` `/forgetkey` `/pdfhelp` を宣言し、Interactivity を有効化しておくこと
+（Socket Mode なので Request URL は不要）。ヘルプは Slack 組み込みの `/help` を
+上書きできないため `/pdfhelp` とする。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from .base import (
     ProgressHandle,
     TranslationOverride,
 )
+from .help import build_help_text
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,11 @@ class SlackAdapter(PlatformAdapter):
                 return
             model = stored.model or f"（既定: {self._settings.openrouter_model}）"
             await ack(f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}")
+
+        @self._app.command("/pdfhelp")
+        async def _cmd_help(ack) -> None:
+            # スラッシュコマンドへの ack 応答は本人にのみ表示される（ephemeral）。
+            await ack(_to_mrkdwn(build_help_text(self._settings, help_command="/pdfhelp")))
 
         @self._app.command("/forgetkey")
         async def _cmd_forgetkey(ack, body) -> None:

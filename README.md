@@ -50,7 +50,8 @@ src/pdf4you/
 4. **Event Subscriptions** で bot events に `message.channels`（必要に応じ `message.groups`、
    **DM利用なら `message.im`**）を購読。
 5. **Interactivity & Shortcuts** を ON（Socket Mode なので Request URL 不要）。
-6. **Slash Commands** に `/setkey` `/keystatus` `/forgetkey` を登録（同上、Request URL 不要）。
+6. **Slash Commands** に `/setkey` `/keystatus` `/forgetkey` `/pdfhelp` を登録（同上、Request URL 不要）。
+   ※ ヘルプは Slack 組み込みの `/help` を上書きできないため `/pdfhelp` という名前にしている。
 7. **App Home** → Messages Tab を有効化し「Allow users to send Slash commands and messages
    from the messages tab」を ON（Bot への DM を受け取るため）。
 8. ワークスペースにインストールし、Bot User OAuth Token → `SLACK_BOT_TOKEN`（`xoxb-...`）。
@@ -69,18 +70,32 @@ src/pdf4you/
 6. Bot への DM で PDF を送っても翻訳できる（DM するには Bot と同じサーバーに所属しているか、
    アプリがユーザーインストール対応であること）。
 
+## ヘルプコマンド
+
+使い方・コマンド一覧・OpenRouter のセットアップ手順を Bot 自身が案内します。
+
+- Discord: `/help`
+- Slack: `/pdfhelp`（組み込みの `/help` と衝突するため別名）
+
+応答は実行した本人にのみ表示されます（ephemeral）。
+
 ## ユーザー別 API キーと外部サービス切替
 
 ローカル推論（vLLM/Ollama）に加えて、ユーザーが自分の **OpenRouter** キーで翻訳を実行できます。
 
 1. `SECRET_KEY` を `.env` に設定（未設定ならこの機能は無効）。
    生成: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`
-2. 各ユーザーが Bot の **DM でスラッシュコマンド**を実行:
+2. 各ユーザーが **OpenRouter の API キー**を用意する:
+   1. [openrouter.ai](https://openrouter.ai/) でアカウントを作成（Google アカウント等でサインアップ可）。
+   2. [Keys](https://openrouter.ai/settings/keys) → **Create Key** でキーを発行し、
+      表示された `sk-or-v1-...` をコピーする（あとから再表示できないので注意）。
+   3. 有料モデルを使う場合は [Credits](https://openrouter.ai/settings/credits) で残高をチャージする。
+3. 各ユーザーが Bot の **DM でスラッシュコマンド**を実行:
    - `/setkey` — モーダルに OpenRouter API キー（と任意でモデル名）を入力して登録。
      入力値はチャットに残らず、応答は本人だけに見える（ephemeral）。
    - `/keystatus` — 登録状態をマスク表示で確認。
    - `/forgetkey` — 登録済みキーを削除。
-3. PDF を投稿して翻訳が始まると、スレッドに **「外部サービスを使用」**
+4. PDF を投稿して翻訳が始まると、スレッドに **「外部サービスを使用」**
    ボタンが出る。押すと、実行中のローカル翻訳を停止し、登録済みキーで **OpenRouter** に切り替えて
    最初から翻訳し直す（要約は切替の影響を受けない）。ボタンは **投稿者本人のみ**操作できる。
 

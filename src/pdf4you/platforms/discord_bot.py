@@ -29,6 +29,7 @@ from .base import (
     ProgressHandle,
     TranslationOverride,
 )
+from .help import build_help_text
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,13 @@ class DiscordAdapter(PlatformAdapter):
             if not await _guard(interaction):
                 return
             await interaction.response.send_modal(_SetKeyModal(keystore))
+
+        @self._tree.command(
+            name="help", description="使い方・コマンド一覧・OpenRouterの設定手順を表示します"
+        )
+        async def help_cmd(interaction: discord.Interaction) -> None:
+            text = build_help_text(self._settings, help_command="/help")
+            await interaction.response.send_message(text[:_DISCORD_LIMIT], ephemeral=True)
 
         @self._tree.command(name="keystatus", description="登録済みAPIキーの状態を表示します")
         async def keystatus(interaction: discord.Interaction) -> None:
