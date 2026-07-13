@@ -9,8 +9,9 @@
 - 要約と mono 翻訳を **並行実行**し、続けて dual を生成。**mono / dual を両方**スレッドへ投稿。
 - Slack / Discord を **単一プロセス**で並行起動。
 - **DM 翻訳**: 監視チャンネルだけでなく、Bot への **DM に PDF を送っても翻訳**できる（`ALLOW_DM`）。
-- **ユーザー別 API キー**: DM のスラッシュコマンド `/setkey` で OpenRouter のキーを各自登録。
-  翻訳中に **「外部サービスを使用」** ボタンで OpenRouter へ切替可能。
+- **ユーザー別 API キー**: DM のスラッシュコマンド `/setkey` で外部サービス（OpenRouter 等の
+  OpenAI 互換 API）のキー・モデル・Base URL を各自登録。翻訳中に **「外部サービスを使用」**
+  ボタンで外部サービスへ切替可能。
 
 詳細な要件は [docs/requirements.md](docs/requirements.md) を参照。
 
@@ -72,7 +73,7 @@ src/pdf4you/
 
 ## ヘルプコマンド
 
-使い方・コマンド一覧・OpenRouter のセットアップ手順を Bot 自身が案内します。
+使い方・コマンド一覧・外部サービスのセットアップ手順を Bot 自身が案内します。
 
 - Discord: `/help`
 - Slack: `/pdfhelp`（組み込みの `/help` と衝突するため別名）
@@ -81,22 +82,27 @@ src/pdf4you/
 
 ## ユーザー別 API キーと外部サービス切替
 
-ローカル推論（vLLM/Ollama）に加えて、ユーザーが自分の **OpenRouter** キーで翻訳を実行できます。
+ローカル推論（vLLM/Ollama）に加えて、ユーザーが自分の API キーで **外部サービス**
+（OpenAI 互換 API なら何でも可）を使って翻訳を実行できます。既定の切替先は `.env` の
+`EXTERNAL_BASE_URL` / `EXTERNAL_MODEL` で設定します（初期値は OpenRouter）。
 
 1. `SECRET_KEY` を `.env` に設定（未設定ならこの機能は無効）。
    生成: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`
-2. 各ユーザーが **OpenRouter の API キー**を用意する:
+2. 各ユーザーが使いたい外部サービスの **API キー**を用意する。
+   既定の OpenRouter を使う場合:
    1. [openrouter.ai](https://openrouter.ai/) でアカウントを作成（Google アカウント等でサインアップ可）。
    2. [Keys](https://openrouter.ai/settings/keys) → **Create Key** でキーを発行し、
       表示された `sk-or-v1-...` をコピーする（あとから再表示できないので注意）。
    3. 有料モデルを使う場合は [Credits](https://openrouter.ai/settings/credits) で残高をチャージする。
 3. 各ユーザーが Bot の **DM でスラッシュコマンド**を実行:
-   - `/setkey` — モーダルに OpenRouter API キー（と任意でモデル名）を入力して登録。
+   - `/setkey` — モーダルに API キー（と任意でモデル名・Base URL）を入力して登録。
+     空欄の項目は `.env` の既定値が使われる。OpenRouter 以外のサービスを使いたい場合は
+     Base URL 欄にそのサービスのエンドポイントを入力する。
      入力値はチャットに残らず、応答は本人だけに見える（ephemeral）。
    - `/keystatus` — 登録状態をマスク表示で確認。
    - `/forgetkey` — 登録済みキーを削除。
 4. PDF を投稿して翻訳が始まると、スレッドに **「外部サービスを使用」**
-   ボタンが出る。押すと、実行中のローカル翻訳を停止し、登録済みキーで **OpenRouter** に切り替えて
+   ボタンが出る。押すと、実行中のローカル翻訳を停止し、登録済みキーで外部サービスに切り替えて
    最初から翻訳し直す（要約は切替の影響を受けない）。ボタンは **投稿者本人のみ**操作できる。
 
 キーは **Fernet で暗号化**して SQLite（`USERKEY_DB`）に保存され、平文はログにも DB にも残りません。

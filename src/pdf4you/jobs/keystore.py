@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS user_keys (
     user_id     TEXT NOT NULL,
     api_key_enc BLOB NOT NULL,
     model       TEXT,
+    base_url    TEXT,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (platform, user_id)
 );
@@ -36,6 +37,7 @@ class StoredKey:
 
     api_key: str
     model: str | None
+    base_url: str | None = None
 
 
 def mask_key(api_key: str) -> str:
@@ -62,6 +64,11 @@ class UserKeyStore:
         db = await aiosqlite.connect(self._db_path)
         if not self._ready:
             await db.executescript(_SCHEMA)
+            # 旧スキーマ（base_url カラムなし）からの移行。
+            async with db.execute("PRAGMA table_info(user_keys)") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+            if "base_url" not in columns:
+                await db.execute("ALTER TABLE user_keys ADD COLUMN base_url TEXT")
             await db.commit()
             self._ready = True
         return db
@@ -73,20 +80,26 @@ class UserKeyStore:
         await db.close()
 
     async def set_key(
-        self, platform: str, user_id: str, api_key: str, model: str | None = None
+        self,
+        platform: str,
+        user_id: str,
+        api_key: str,
+        model: str | None = None,
+        base_url: str | None = None,
     ) -> None:
-        """キー（と任意のモデル）を暗号化して保存/更新する。"""
+        """キー（と任意のモデル・Base URL）を暗号化して保存/更新する。"""
         enc = self._fernet.encrypt(api_key.encode())
         now = dt.datetime.now(dt.UTC).isoformat()
         db = await self._connect()
         try:
             await db.execute(
-                "INSERT INTO user_keys (platform, user_id, api_key_enc, model, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO user_keys "
+                "(platform, user_id, api_key_enc, model, base_url, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(platform, user_id) DO UPDATE SET "
                 "api_key_enc=excluded.api_key_enc, model=excluded.model, "
-                "updated_at=excluded.updated_at",
-                (platform, user_id, enc, model or None, now),
+                "base_url=excluded.base_url, updated_at=excluded.updated_at",
+                (platform, user_id, enc, model or None, base_url or None, now),
             )
             await db.commit()
         finally:
@@ -97,7 +110,7 @@ class UserKeyStore:
         db = await self._connect()
         try:
             async with db.execute(
-                "SELECT api_key_enc, model FROM user_keys WHERE platform=? AND user_id=?",
+                "SELECT api_key_enc, model, base_url FROM user_keys WHERE platform=? AND user_id=?",
                 (platform, user_id),
             ) as cur:
                 row = await cur.fetchone()
@@ -113,7 +126,7 @@ class UserKeyStore:
                 "キーの復号に失敗しました（SECRET_KEY 変更の可能性）: %s/%s", platform, user_id
             )
             return None
-        return StoredKey(api_key=api_key, model=row[1])
+        return StoredKey(api_key=api_key, model=row[1], base_url=row[2])
 
     async def delete_key(self, platform: str, user_id: str) -> bool:
         """キーを削除する。削除したら True、元々無ければ False。"""

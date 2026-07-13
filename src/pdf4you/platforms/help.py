@@ -8,16 +8,20 @@ from __future__ import annotations
 
 from ..config import Settings
 
-_OPENROUTER_GUIDE = """\
-**外部サービス（OpenRouter）のセットアップ**
-自分の API キーを登録すると、ローカル翻訳の順番待ちをスキップして OpenRouter で今すぐ翻訳できます。
-1. <https://openrouter.ai/> でアカウントを作成（Google アカウント等でサインアップ可）
-2. **Keys**（<https://openrouter.ai/settings/keys>）→ **Create Key** でキーを発行し、\
-表示された `sk-or-v1-...` をコピー（あとから再表示できないので注意）
-3. 有料モデルを使う場合は **Credits**（<https://openrouter.ai/settings/credits>）で残高をチャージ
-4. Bot に `/setkey` を実行し、モーダルにキーを貼り付けて保存（モデル欄は空欄なら既定 `{model}`）
-5. PDF 投稿後にスレッドへ出る **「外部サービスを使用」** ボタンを押すと OpenRouter に切り替わる\
+_EXTERNAL_GUIDE = """\
+**外部サービスのセットアップ**
+自分の API キーを登録すると、ローカル翻訳の順番待ちをスキップして外部サービス\
+（OpenAI 互換 API）で今すぐ翻訳できます。
+1. 使いたいサービスで API キーを発行する
+2. Bot に `/setkey` を実行し、モーダルにキーを貼り付けて保存\
+（モデル欄・Base URL 欄は空欄なら既定 `{model}` / `{base_url}`）
+3. PDF 投稿後にスレッドへ出る **「外部サービスを使用」** ボタンを押すと切り替わる\
 （操作できるのは投稿者本人のみ）"""
+
+_OPENROUTER_STEPS = """\
+既定の OpenRouter を使う場合: <https://openrouter.ai/> でアカウント作成 → \
+**Keys**（<https://openrouter.ai/settings/keys>）でキーを発行（`sk-or-v1-...` は再表示不可）\
+→ 有料モデルは **Credits**（<https://openrouter.ai/settings/credits>）で残高をチャージ"""
 
 _KEYS_DISABLED_NOTE = (
     "⚠️ 現在は管理者が SECRET_KEY を設定していないため、"
@@ -26,7 +30,7 @@ _KEYS_DISABLED_NOTE = (
 
 
 def build_help_text(settings: Settings, *, help_command: str = "/help") -> str:
-    """使い方・コマンド一覧・OpenRouter 手順をまとめたヘルプを返す。"""
+    """使い方・コマンド一覧・外部サービスの設定手順をまとめたヘルプを返す。"""
     lines = [
         "**📄 pdf4you — PDF 翻訳・要約 Bot**",
         "",
@@ -42,13 +46,15 @@ def build_help_text(settings: Settings, *, help_command: str = "/help") -> str:
         f"- サイズ上限: {settings.max_pdf_mb}MB / 翻訳先言語: `{settings.lang_out}`",
         "",
         "**コマンド**",
-        "- `/setkey` — OpenRouter API キーを登録/更新（DM 推奨）",
+        "- `/setkey` — 外部サービスの API キー・モデル・Base URL を登録/更新（DM 推奨）",
         "- `/keystatus` — 登録状態をマスク表示で確認",
         "- `/forgetkey` — 登録済みキーを削除",
         f"- `{help_command}` — このヘルプを表示",
         "",
-        _OPENROUTER_GUIDE.format(model=settings.openrouter_model),
+        _EXTERNAL_GUIDE.format(model=settings.external_model, base_url=settings.external_base_url),
     ]
+    if "openrouter" in settings.external_base_url.lower():
+        lines += ["", _OPENROUTER_STEPS]
     if not settings.keys_enabled:
         lines += ["", _KEYS_DISABLED_NOTE]
     return "\n".join(lines)

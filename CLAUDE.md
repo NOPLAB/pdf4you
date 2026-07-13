@@ -36,7 +36,7 @@ docker compose up -d --build     # Docker 常時稼働（ビルド時に warmup 
 
 - **OpenAI 互換抽象化が全体の要**。翻訳（pdf2zh-next の `OpenAISettings`）も要約も同じ「`base_url`/`api_key`/`model`」の三点で表現される。バックエンドを増やす作業＝新しいエンドポイント設定を渡すだけ。
 
-- **翻訳の外部切替**（`pipeline.py` 4〜5節が中核）。翻訳開始と同時に「外部サービスを使用」ボタンを提示。押下時は `JobControl.request_switch()` が `asyncio.Future` を解決し、パイプラインが `asyncio.wait(FIRST_COMPLETED)` で「翻訳完了」と「切替要求」を競わせる。切替が勝てば実行中の翻訳タスクを `cancel()` して OpenRouter で**最初からやり直す**。切替は **1 ジョブ 1 回**、ローカルが先に完走したら完了優先。要約は切替の影響を受けない。ボタンは**投稿者本人のみ**操作可（`req.user_id` で検証）。
+- **翻訳の外部切替**（`pipeline.py` 4〜5節が中核）。翻訳開始と同時に「外部サービスを使用」ボタンを提示。押下時は `JobControl.request_switch()` が `asyncio.Future` を解決し、パイプラインが `asyncio.wait(FIRST_COMPLETED)` で「翻訳完了」と「切替要求」を競わせる。切替が勝てば実行中の翻訳タスクを `cancel()` して外部サービス（既定は `EXTERNAL_BASE_URL`/`EXTERNAL_MODEL`、`/setkey` でユーザーごとに上書き可）で**最初からやり直す**。切替は **1 ジョブ 1 回**、ローカルが先に完走したら完了優先。要約は切替の影響を受けない。ボタンは**投稿者本人のみ**操作可（`req.user_id` で検証）。
 
 - **`SECRET_KEY`（Fernet 鍵）でキー機能全体がゲートされる**。`Settings.keys_enabled` が False なら `keystore` は `None` になり、`/setkey`・`/keystatus`・`/forgetkey`・切替ボタンがすべて無効化される。キー機能に触るコードは必ず `keystore is None` を確認する。API キーは平文でログにも DB にも残さない（保存前に Fernet 暗号化、表示は `mask_key`）。
 

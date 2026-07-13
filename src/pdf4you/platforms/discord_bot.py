@@ -1,9 +1,9 @@
 """Discord アダプタ（discord.py）。
 
 監視チャンネルへの PDF 添付を検知し、その投稿からスレッドを作成して返信する。
-加えて、DM でのスラッシュコマンド（/setkey ほか）で OpenRouter の API キーをユーザー
-ごとに登録でき、ローカル翻訳の順番待ち中・実行中は「外部サービスを使用」ボタンを
-提示して、順番待ちのスキップや実行中の切り替えを行える。
+加えて、DM でのスラッシュコマンド（/setkey ほか）で外部サービス（OpenAI 互換 API）の
+API キー・モデル・Base URL をユーザーごとに登録でき、ローカル翻訳の順番待ち中・実行中は
+「外部サービスを使用」ボタンを提示して、順番待ちのスキップや実行中の切り替えを行える。
 
 必要: Bot に「Message Content Intent」を有効化。権限: メッセージ送信・スレッド作成・
 ファイル添付。スラッシュコマンドは起動時に `CommandTree.sync()` で同期する。
@@ -28,6 +28,7 @@ from .base import (
     PlatformAdapter,
     ProgressHandle,
     TranslationOverride,
+    service_label,
 )
 from .help import build_help_text
 
@@ -57,8 +58,8 @@ class _SetKeyModal(discord.ui.Modal, title="APIキーを登録"):
     """API キー入力用のモーダル。入力値はチャットに表示されず、応答も ephemeral。"""
 
     api_key: discord.ui.TextInput = discord.ui.TextInput(
-        label="OpenRouter API キー",
-        placeholder="sk-or-v1-...",
+        label="外部サービスの API キー",
+        placeholder="sk-...",
         style=discord.TextStyle.short,
         required=True,
         max_length=200,
@@ -70,15 +71,28 @@ class _SetKeyModal(discord.ui.Modal, title="APIキーを登録"):
         required=False,
         max_length=120,
     )
+    base_url: discord.ui.TextInput = discord.ui.TextInput(
+        label="Base URL（任意 / 空欄なら既定）",
+        placeholder="https://openrouter.ai/api/v1",
+        style=discord.TextStyle.short,
+        required=False,
+        max_length=200,
+    )
 
-    def __init__(self, keystore: UserKeyStore):
+    def __init__(self, keystore: UserKeyStore, settings: Settings):
         super().__init__()
         self._keystore = keystore
+        # 既定値をプレースホルダで案内する（.env の EXTERNAL_* に追随）。
+        if settings.external_model:
+            self.model.placeholder = settings.external_model
+        if settings.external_base_url:
+            self.base_url.placeholder = settings.external_base_url
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         model = self.model.value.strip() or None
+        base_url = self.base_url.value.strip() or None
         await self._keystore.set_key(
-            "discord", str(interaction.user.id), self.api_key.value.strip(), model
+            "discord", str(interaction.user.id), self.api_key.value.strip(), model, base_url
         )
         await interaction.response.send_message(
             f"✅ APIキーを登録しました（`{mask_key(self.api_key.value.strip())}`）。",
@@ -175,15 +189,15 @@ class DiscordAdapter(PlatformAdapter):
             return True
 
         @self._tree.command(
-            name="setkey", description="OpenRouter APIキーを登録/更新します（DM推奨）"
+            name="setkey", description="外部サービスのAPIキーを登録/更新します（DM推奨）"
         )
         async def setkey(interaction: discord.Interaction) -> None:
             if not await _guard(interaction):
                 return
-            await interaction.response.send_modal(_SetKeyModal(keystore))
+            await interaction.response.send_modal(_SetKeyModal(keystore, self._settings))
 
         @self._tree.command(
-            name="help", description="使い方・コマンド一覧・OpenRouterの設定手順を表示します"
+            name="help", description="使い方・コマンド一覧・外部サービスの設定手順を表示します"
         )
         async def help_cmd(interaction: discord.Interaction) -> None:
             text = build_help_text(self._settings, help_command="/help")
@@ -199,9 +213,11 @@ class DiscordAdapter(PlatformAdapter):
                     "未登録です。`/setkey` で登録できます。", ephemeral=True
                 )
                 return
-            model = stored.model or f"（既定: {self._settings.openrouter_model}）"
+            model = stored.model or f"（既定: {self._settings.external_model}）"
+            base_url = stored.base_url or f"（既定: {self._settings.external_base_url}）"
             await interaction.response.send_message(
-                f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}", ephemeral=True
+                f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}\nBase URL: {base_url}",
+                ephemeral=True,
             )
 
         @self._tree.command(name="forgetkey", description="登録済みAPIキーを削除します")
@@ -227,8 +243,8 @@ class DiscordAdapter(PlatformAdapter):
         view = _SwitchView(self, req, control)
         try:
             message = await dest.send(
-                "💡 ローカル翻訳の順番待ちをスキップして、登録済みの外部サービス"
-                "（OpenRouter）で今すぐ翻訳できます。",
+                "💡 ローカル翻訳の順番待ちをスキップして、登録済みの外部サービスで"
+                "今すぐ翻訳できます。",
                 view=view,
             )
         except Exception:
@@ -261,10 +277,12 @@ class DiscordAdapter(PlatformAdapter):
                 ephemeral=True,
             )
             return
+        base_url = stored.base_url or self._settings.external_base_url
         override = TranslationOverride(
-            base_url=self._settings.openrouter_base_url,
+            base_url=base_url,
             api_key=stored.api_key,
-            model=stored.model or self._settings.openrouter_model,
+            model=stored.model or self._settings.external_model,
+            label=service_label(base_url),
         )
         if not control.request_switch(override):
             await interaction.response.send_message(
@@ -274,7 +292,7 @@ class DiscordAdapter(PlatformAdapter):
         button.disabled = True
         try:
             await interaction.response.edit_message(
-                content="🔄 外部サービス（OpenRouter）に切り替えています…", view=view
+                content=f"🔄 外部サービス（{override.label}）に切り替えています…", view=view
             )
         except Exception:
             logger.warning("切替ボタンの更新に失敗しました", exc_info=True)

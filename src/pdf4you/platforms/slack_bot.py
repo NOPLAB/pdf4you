@@ -1,9 +1,10 @@
 """Slack アダプタ（Bolt / Socket Mode）。
 
 監視チャンネルへの PDF 添付を検知して JobRequest を発行し、スレッド（thread_ts）へ
-テキスト・ファイルを投稿する。加えて、スラッシュコマンド（/setkey ほか）で OpenRouter
-の API キーをユーザーごとに登録でき、ローカル翻訳の順番待ち中・実行中は「外部サービス
-を使用」ボタン（Block Kit）を提示して、順番待ちのスキップや実行中の切り替えを行える。
+テキスト・ファイルを投稿する。加えて、スラッシュコマンド（/setkey ほか）で外部サービス
+（OpenAI 互換 API）の API キー・モデル・Base URL をユーザーごとに登録でき、ローカル翻訳の
+順番待ち中・実行中は「外部サービスを使用」ボタン（Block Kit）を提示して、順番待ちの
+スキップや実行中の切り替えを行える。
 
 必要スコープ: `files:read`, `chat:write`, `commands`, `channels:history`（対象チャンネル
 種別に応じて groups/im/mpim も）。スラッシュコマンドはアプリ設定側で `/setkey`
@@ -32,6 +33,7 @@ from .base import (
     PlatformAdapter,
     ProgressHandle,
     TranslationOverride,
+    service_label,
 )
 from .help import build_help_text
 
@@ -55,7 +57,7 @@ def _to_mrkdwn(text: str) -> str:
     return text
 
 
-def _setkey_modal_view(default_model: str) -> dict:
+def _setkey_modal_view(default_model: str, default_base_url: str) -> dict:
     return {
         "type": "modal",
         "callback_id": _SETKEY_MODAL,
@@ -66,11 +68,11 @@ def _setkey_modal_view(default_model: str) -> dict:
             {
                 "type": "input",
                 "block_id": "api_key",
-                "label": {"type": "plain_text", "text": "OpenRouter API キー"},
+                "label": {"type": "plain_text", "text": "外部サービスの API キー"},
                 "element": {
                     "type": "plain_text_input",
                     "action_id": "value",
-                    "placeholder": {"type": "plain_text", "text": "sk-or-v1-..."},
+                    "placeholder": {"type": "plain_text", "text": "sk-..."},
                 },
             },
             {
@@ -84,6 +86,20 @@ def _setkey_modal_view(default_model: str) -> dict:
                     "placeholder": {
                         "type": "plain_text",
                         "text": default_model or "openai/gpt-4o-mini",
+                    },
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "base_url",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Base URL（任意 / 空欄なら既定）"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "value",
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": default_base_url or "https://openrouter.ai/api/v1",
                     },
                 },
             },
@@ -173,7 +189,9 @@ class SlackAdapter(PlatformAdapter):
             await ack()
             await client.views_open(
                 trigger_id=body["trigger_id"],
-                view=_setkey_modal_view(self._settings.openrouter_model),
+                view=_setkey_modal_view(
+                    self._settings.external_model, self._settings.external_base_url
+                ),
             )
 
         @self._app.view(_SETKEY_MODAL)
@@ -185,9 +203,10 @@ class SlackAdapter(PlatformAdapter):
             values = view["state"]["values"]
             api_key = (values["api_key"]["value"]["value"] or "").strip()
             model = (values["model"]["value"]["value"] or "").strip() or None
+            base_url = (values["base_url"]["value"]["value"] or "").strip() or None
             if not api_key:
                 return
-            await keystore.set_key("slack", user, api_key, model)
+            await keystore.set_key("slack", user, api_key, model, base_url)
             try:
                 # モーダルには確認トーストが無いので DM で結果を通知する。
                 await client.chat_postMessage(
@@ -206,8 +225,11 @@ class SlackAdapter(PlatformAdapter):
             if stored is None:
                 await ack("未登録です。`/setkey` で登録できます。")
                 return
-            model = stored.model or f"（既定: {self._settings.openrouter_model}）"
-            await ack(f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}")
+            model = stored.model or f"（既定: {self._settings.external_model}）"
+            base_url = stored.base_url or f"（既定: {self._settings.external_base_url}）"
+            await ack(
+                f"登録済み: `{mask_key(stored.api_key)}`\nモデル: {model}\nBase URL: {base_url}"
+            )
 
         @self._app.command("/pdfhelp")
         async def _cmd_help(ack) -> None:
@@ -240,7 +262,7 @@ class SlackAdapter(PlatformAdapter):
                 "text": {
                     "type": "mrkdwn",
                     "text": "💡 ローカル翻訳の順番待ちをスキップして、登録済みの外部"
-                    "サービス（OpenRouter）で今すぐ翻訳できます。",
+                    "サービスで今すぐ翻訳できます。",
                 },
             },
             {
@@ -303,10 +325,12 @@ class SlackAdapter(PlatformAdapter):
         if stored is None:
             await ephem("⚠️ APIキーが未登録です。`/setkey` で登録してから再度お試しください。")
             return
+        base_url = stored.base_url or self._settings.external_base_url
         override = TranslationOverride(
-            base_url=self._settings.openrouter_base_url,
+            base_url=base_url,
             api_key=stored.api_key,
-            model=stored.model or self._settings.openrouter_model,
+            model=stored.model or self._settings.external_model,
+            label=service_label(base_url),
         )
         if not control.request_switch(override):
             await ephem("すでに切り替え済みか、翻訳が完了しています。")
@@ -316,7 +340,7 @@ class SlackAdapter(PlatformAdapter):
                 await client.chat_update(
                     channel=channel,
                     ts=msg_ts,
-                    text="🔄 外部サービス（OpenRouter）に切り替えています…",
+                    text=f"🔄 外部サービス（{override.label}）に切り替えています…",
                     blocks=[],
                 )
             except Exception:

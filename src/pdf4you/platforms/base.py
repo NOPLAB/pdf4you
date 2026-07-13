@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -37,6 +38,15 @@ JobCallback = Callable[[JobRequest], Awaitable[None]]
 OnDownload = Callable[[int, int], Awaitable[None]]
 
 
+def service_label(base_url: str) -> str:
+    """進捗表示用に base_url からサービス名（ホスト名）を導出する。"""
+    try:
+        host = urlparse(base_url).hostname
+    except ValueError:
+        host = None
+    return host or "外部サービス"
+
+
 @dataclass
 class TranslationOverride:
     """翻訳を途中で別バックエンドに切り替えるための接続パラメータ。
@@ -47,7 +57,7 @@ class TranslationOverride:
     base_url: str
     api_key: str
     model: str
-    label: str = "OpenRouter"  # 進捗表示に使う表示名
+    label: str = "外部サービス"  # 進捗表示に使う表示名
 
 
 class JobControl:

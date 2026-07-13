@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     summary_api_key: str = "dummy"
     summary_model: str = ""
 
-    # ---- 外部翻訳サービス（OpenRouter 固定）----
-    # ローカル翻訳を途中で切り替えたとき、ユーザー個別のキーで叩く先。
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "openai/gpt-4o-mini"
+    # ---- 外部翻訳サービス（OpenAI互換ならどこでも可）----
+    # ローカル翻訳を途中で切り替えたとき、ユーザー個別のキーで叩く先の既定値。
+    # ユーザーは /setkey でモデル・Base URL を個別に上書きできる。
+    external_base_url: str = "https://openrouter.ai/api/v1"
+    external_model: str = "openai/gpt-4o-mini"
 
     # ---- ユーザーAPIキー保管（DMスラッシュコマンドで登録）----
     # secret_key は Fernet 鍵。未設定ならキー機能（/setkey・切替ボタン）を無効化する。
