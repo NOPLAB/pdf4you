@@ -5,7 +5,7 @@ description = "特定チャンネルに投稿されたPDFを翻訳(pdf2zh-next)�
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.15,<3.16"
 dependencies = [
     "openai>=1.40",
     "slack-bolt>=1.20",
